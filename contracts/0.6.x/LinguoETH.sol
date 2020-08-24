@@ -76,6 +76,17 @@ contract LinguoETH is IArbitrable, IEvidence {
      */
     event TaskResolved(uint256 indexed _taskID, string _reason);
 
+    /**
+     * @dev To be emitted when the arbitrator rules a given dispute.
+     * @notice When there is an appeal and one of the sides fails to pay the whole appeal fees,
+     * the other side automatically wins, even if they had lost the previous rounds.
+     * The actual outcome will only be known after executing the `executeRuling` method for the task.
+     * @param _arbitrator The arbitrator address.
+     * @param _disputeID The ID of the dispute.
+     * @param _ruling The ruling of the arbitrator for that dispute.
+     */
+    event InterimRuling(IArbitrator indexed _arbitrator, uint256 indexed _disputeID, uint256 _ruling);
+
     enum Status {Created, Assigned, InReview, InDispute, Resolved}
 
     enum Party {
@@ -102,10 +113,17 @@ contract LinguoETH is IArbitrable, IEvidence {
         address payable[3] parties; // Translator and challenger of the task.
     }
 
+    struct TaskDispute {
+        bool exists; // Required to control whether a given dispute for a task exists.
+        bool hasRuling; // Required to differentiate between having no ruling and a RefusedToRule ruling.
+        uint256 taskID; // The task ID.
+        uint256 ruling; // The ruling given by the arbitrator.
+    }
+
     struct Round {
-        uint256 feeRewards; // Sum of reimbursable fees and stake rewards available to the parties that made contributions to the side that ultimately wins a dispute.
         uint256[3] paidFees; // Tracks the fees paid by each side in this round.
         bool[3] hasPaid; // True when the side has fully paid its fee. False otherwise.
+        uint256 feeRewards; // Sum of reimbursable fees and stake rewards available to the parties that made contributions to the side that ultimately wins a dispute.
         mapping(address => uint256[3]) contributions; // Maps contributors to their contributions for each side.
     }
 
@@ -142,10 +160,10 @@ contract LinguoETH is IArbitrable, IEvidence {
     bytes32[] public taskHashes;
 
     /// @dev Maps a taskID to its respective rounds.
-    mapping(uint256 => Round[]) public roundsByTask;
+    mapping(uint256 => Round[]) public roundsByTaskID;
 
-    /// @dev Maps a disputeID to its respective task.
-    mapping(uint256 => uint256) public disputeIDtoTaskID;
+    /// @dev Maps a disputeID to its respective task dispute.
+    mapping(uint256 => TaskDispute) public taskDisputesByDisputeID;
 
     constructor(
         IArbitrator _arbitrator,
@@ -346,8 +364,11 @@ contract LinguoETH is IArbitrable, IEvidence {
         _task.disputeID = arbitrator.createDispute{value: arbitrationCost}(2, arbitratorExtraData);
 
         taskHashes[_taskID] = hashTaskState(_task);
-        disputeIDtoTaskID[_task.disputeID] = _taskID;
-        roundsByTask[_taskID].push();
+
+        taskDisputesByDisputeID[_task.disputeID].exists = true;
+        taskDisputesByDisputeID[_task.disputeID].taskID = _taskID;
+
+        roundsByTaskID[_taskID].push();
 
         uint256 remainder = msg.value - challengeDeposit;
         msg.sender.send(remainder);
@@ -361,7 +382,89 @@ contract LinguoETH is IArbitrable, IEvidence {
         }
     }
 
-    function rule(uint256 _disputeID, uint256 _ruling) external override {}
+    /**
+     * @notice Ruling 0 is reserved for "Refused to Rule".
+     * @dev Registers a ruling for a dispute. Can only be called by the arbitrator.
+     * @param _disputeID ID of the dispute in the Arbitrator contract.
+     * @param _ruling Ruling given by the arbitrator.
+     */
+    function rule(uint256 _disputeID, uint256 _ruling) external override {
+        require(msg.sender == address(arbitrator), "Only arbitrator allowed");
+
+        TaskDispute storage taskDispute = taskDisputesByDisputeID[_disputeID];
+        require(taskDispute.exists, "Dispute does not exist");
+        require(taskDispute.hasRuling == false, "Dispute already settled");
+
+        taskDispute.hasRuling = true;
+        taskDispute.ruling = _ruling;
+
+        emit InterimRuling(IArbitrator(msg.sender), _disputeID, _ruling);
+    }
+
+    /**
+     * @dev Effectively executes the ruling given by the arbitrator for a task.
+     * @param _taskID The ID of the task.
+     * @param _task The task state.
+     */
+    function executeRuling(uint256 _taskID, Task memory _task) external onlyValidTask(_taskID, _task) {
+        require(_task.status == Status.InDispute, "Invalid task status");
+
+        TaskDispute storage taskDispute = taskDisputesByDisputeID[_task.disputeID];
+        require(taskDispute.taskID == _taskID, "Dispute references other task");
+        require(taskDispute.hasRuling, "Arbitrator has not ruled yet");
+
+        uint256 finalRuling = taskDispute.ruling;
+
+        Round[] storage rounds = roundsByTaskID[_taskID];
+        Round storage round = rounds[rounds.length - 1];
+
+        /**
+         * @notice If only one side paid its fees, we assume the ruling to be in its favor.
+         * It is not possible for a round to have both sides paying the full fees AND
+         * being the latest round at the same time.
+         * When the last party pays its fees, a new round is automatically created.
+         */
+        if (round.hasPaid[uint256(Party.Translator)] == true) {
+            finalRuling = uint256(Party.Translator);
+            taskDispute.ruling = finalRuling;
+        } else if (round.hasPaid[uint256(Party.Challenger)] == true) {
+            finalRuling = uint256(Party.Challenger);
+            taskDispute.ruling = finalRuling;
+        }
+
+        uint256 amount;
+        uint256 requesterDeposit = _task.requesterDeposit;
+        uint256 sumDeposit = _task.sumDeposit;
+
+        _task.status = Status.Resolved;
+        _task.ruling = finalRuling;
+        _task.requesterDeposit = 0;
+        _task.sumDeposit = 0;
+
+        taskHashes[_taskID] = hashTaskState(_task);
+
+        if (finalRuling == uint256(Party.None)) {
+            /**
+             * @notice The value of `sumDeposit` is split between the parties.
+             * If the sum is uneven, the value of 1 wei will remain locked in the contract.
+             */
+            amount = sumDeposit / 2;
+            _task.parties[uint256(Party.Translator)].send(amount);
+            _task.parties[uint256(Party.Challenger)].send(amount);
+
+            _task.requester.send(requesterDeposit);
+        } else if (finalRuling == uint256(Party.Translator)) {
+            amount = requesterDeposit.addCap(sumDeposit);
+            _task.parties[uint256(Party.Translator)].send(amount);
+        } else {
+            _task.requester.send(requesterDeposit);
+            _task.parties[uint256(Party.Challenger)].send(sumDeposit);
+        }
+
+        emit Ruling(arbitrator, _task.disputeID, finalRuling);
+        emit TaskResolved(_taskID, "dispute-settled");
+        emit TaskStateUpdated(_taskID, _task);
+    }
 
     /**
      * @dev Gets the current price of a specified task.
@@ -426,6 +529,45 @@ contract LinguoETH is IArbitrable, IEvidence {
             uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
             return arbitrationCost.addCap((challengeMultiplier.mulCap(_task.requesterDeposit)) / MULTIPLIER_DIVISOR);
         }
+    }
+
+    /**
+     * @dev Gets the number of rounds of the specific task.
+     * @param _taskID The ID of the task.
+     * @return The number of rounds.
+     */
+    function getNumberOfRounds(uint256 _taskID) public view returns (uint256) {
+        return roundsByTaskID[_taskID].length;
+    }
+
+    /**
+     * @dev Gets the information on a round of a task.
+     * @param _taskID The ID of the task.
+     * @param _round The round to be queried.
+     * @return paidFees The amount of fees paid by each side.
+     * @return hasPaid Whether each side has paid all the required appeal fees or not.
+     * @return feeRewards The total amount to be used as appeal fees and rewards.
+     */
+    function getRoundInfo(uint256 _taskID, uint256 _round)
+        public
+        view
+        returns (
+            uint256[3] memory paidFees,
+            bool[3] memory hasPaid,
+            uint256 feeRewards
+        )
+    {
+        Round memory round = roundsByTaskID[_taskID][_round];
+        return (round.paidFees, round.hasPaid, round.feeRewards);
+    }
+
+    /**
+     * @dev Gets the task dispute related to a specific dispute ID.
+     * @param _disputeID The ID of the dispute.
+     * @return The task dispute.
+     */
+    function getTaskDispute(uint256 _disputeID) public view returns (TaskDispute memory) {
+        return taskDisputesByDisputeID[_disputeID];
     }
 
     /**
