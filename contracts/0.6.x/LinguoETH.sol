@@ -770,6 +770,22 @@ contract LinguoETH is IArbitrable, IEvidence {
     }
 
     /**
+     * @dev Gets the contributions made by a party for a given round of task appeal.
+     * @param _taskID The ID of the task.
+     * @param _contributor The address of the contributor.
+     * @param _roundNumber The position of the round.
+     * @return The contributions.
+     */
+    function getContributions(
+        uint256 _taskID,
+        address _contributor,
+        uint256 _roundNumber
+    ) external view returns (uint256[3] memory) {
+        Round storage round = roundsByTaskID[_taskID][_roundNumber];
+        return round.contributions[_contributor];
+    }
+
+    /**
      * @dev Gets the task dispute related to a specific dispute ID.
      * @param _disputeID The ID of the dispute.
      * @return The task dispute.

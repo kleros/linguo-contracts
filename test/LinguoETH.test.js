@@ -1185,6 +1185,19 @@ describe("Token contract", async () => {
         "Invalid balance for challenger"
       );
     });
+
+    it("Should store the account contribution to the appeal funding", async () => {
+      const ruling = DisputeRuling.TranslationRejected;
+      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
+      const contributedAmount = loserAppealFee.div(10);
+
+      await giveRulingHelper(challengedTask.disputeID, ruling);
+      await fundAppealHelper(taskID, challengedTask, contributedAmount, TaskParty.Translator, other);
+
+      const actualContributions = await contract.getContributions(taskID, await other.getAddress(), 0);
+
+      expect(actualContributions[TaskParty.Translator]).to.equal(contributedAmount, "Invalid contribution stored");
+    });
   });
 
   describe("Calculate withdrawable appeal fees and rewards", () => {
