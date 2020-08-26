@@ -1870,6 +1870,9 @@ describe("Token contract", async () => {
   }
 
   async function batchWithdrawHelper(taskID, task, addresses = []) {
-    return Promise.all(addresses.map((address) => contract.batchWithdrawFeesAndRewards(taskID, task, address, 0, 0)));
+    const txs = await Promise.all(
+      addresses.map((address) => contract.batchWithdrawFeesAndRewards(taskID, task, address, 0, 0))
+    );
+    return Promise.all(txs.map((tx) => tx.wait()));
   }
 });
