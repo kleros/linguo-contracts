@@ -87,6 +87,22 @@ contract LinguoETH is IArbitrable, IEvidence {
      */
     event InterimRuling(IArbitrator indexed _arbitrator, uint256 indexed _disputeID, uint256 _ruling);
 
+    /**
+     * @dev To be emitted when someone contributes to the appeal process.
+     * @param _taskID The ID of the respective task.
+     * @param _party The party which received the contribution.
+     * @param _contributor The address of the contributor.
+     * @param _amount The amount contributed.
+     */
+    event AppealFeeContribution(uint256 indexed _taskID, Party _party, address _contributor, uint256 _amount);
+
+    /**
+     * @dev To be emitted when the appeal fees of one of the parties are fully funded.
+     * @param _taskID The ID of the respective task.
+     * @param _party The party that is fully funded.
+     */
+    event AppealFeePaid(uint256 indexed _taskID, Party _party);
+
     enum Status {Created, Assigned, InReview, InDispute, Resolved}
 
     enum Party {
@@ -202,7 +218,7 @@ contract LinguoETH is IArbitrable, IEvidence {
     function createTask(
         uint256 _deadline,
         uint256 _minPrice,
-        string memory _metaEvidence
+        string calldata _metaEvidence
     ) external payable returns (uint256) {
         require(msg.value >= _minPrice, "Deposit value too low");
         require(_deadline > block.timestamp, "Deadline must be in the future");
@@ -273,7 +289,7 @@ contract LinguoETH is IArbitrable, IEvidence {
     function submitTranslation(
         uint256 _taskID,
         Task memory _task,
-        string memory _translatedText
+        string calldata _translatedText
     ) external onlyValidTask(_taskID, _task) {
         require(_task.status == Status.Assigned, "Invalid task status");
         require(block.timestamp - _task.lastInteraction <= _task.submissionTimeout, "Deadline has passed");
@@ -347,7 +363,7 @@ contract LinguoETH is IArbitrable, IEvidence {
     function challengeTranslation(
         uint256 _taskID,
         Task memory _task,
-        string memory _evidence
+        string calldata _evidence
     ) external payable onlyValidTask(_taskID, _task) {
         uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
         uint256 challengeDeposit = arbitrationCost.addCap(
@@ -380,6 +396,122 @@ contract LinguoETH is IArbitrable, IEvidence {
         if (bytes(_evidence).length > 0) {
             emit Evidence(arbitrator, _taskID, msg.sender, _evidence);
         }
+    }
+
+    /**
+     * @dev Registers an evidence submission.
+     * @param _taskID A task evidence is submitted for.
+     * @param _task The task state.
+     * @param _evidence A link to evidence using its URI.
+     */
+    function submitEvidence(
+        uint256 _taskID,
+        Task memory _task,
+        string calldata _evidence
+    ) external onlyValidTask(_taskID, _task) {
+        /**
+         * @notice When `rule` was called, but `executeRuling` was not yet,
+         * the task is still in InDispute status, but the dispute is already settled.
+         */
+        require(taskDisputesByDisputeID[_task.disputeID].hasRuling == false, "Dispute already settled");
+
+        emit Evidence(arbitrator, _taskID, msg.sender, _evidence);
+    }
+
+    /**
+     * @dev Takes up to the total amount required to fund a side of an appeal.
+     * @notice Reimburses the rest.
+     * @notice Creates an appeal if both sides are fully funded.
+     * @param _taskID The ID of challenged task.
+     * @param _task The task state.
+     * @param _side The party that pays the appeal fee.
+     */
+    function fundAppeal(
+        uint256 _taskID,
+        Task memory _task,
+        Party _side
+    ) external payable onlyValidTask(_taskID, _task) {
+        require(_side == Party.Translator || _side == Party.Challenger, "Invalid side");
+        require(_task.status == Status.InDispute, "No dispute to appeal");
+        require(
+            arbitrator.disputeStatus(_task.disputeID) == IArbitrator.DisputeStatus.Appealable,
+            "Dispute is not appealable"
+        );
+
+        (uint256 appealPeriodStart, uint256 appealPeriodEnd) = arbitrator.appealPeriod(_task.disputeID);
+        require(now >= appealPeriodStart && now < appealPeriodEnd, "Appeal period is over");
+
+        uint256 winner = arbitrator.currentRuling(_task.disputeID);
+        uint256 multiplier;
+        if (winner == uint256(_side)) {
+            multiplier = winnerStakeMultiplier;
+        } else if (winner == 0) {
+            multiplier = sharedStakeMultiplier;
+        } else {
+            require(
+                now - appealPeriodStart < (appealPeriodEnd - appealPeriodStart) / 2,
+                "1st half appeal period is over"
+            );
+            multiplier = loserStakeMultiplier;
+        }
+
+        Round storage round = roundsByTaskID[_taskID][roundsByTaskID[_taskID].length - 1];
+        require(!round.hasPaid[uint256(_side)], "Appeal fee already paid");
+
+        uint256 appealCost = arbitrator.appealCost(_task.disputeID, arbitratorExtraData);
+        uint256 totalCost = appealCost.addCap((appealCost.mulCap(multiplier)) / MULTIPLIER_DIVISOR);
+
+        // Take up to the amount necessary to fund the current round at the current costs.
+        uint256 contribution; // Amount contributed.
+        uint256 remainingETH; // Remaining ETH to send back.
+        (contribution, remainingETH) = calculateContribution(
+            msg.value,
+            totalCost.subCap(round.paidFees[uint256(_side)])
+        );
+        round.contributions[msg.sender][uint256(_side)] += contribution;
+        round.paidFees[uint256(_side)] += contribution;
+
+        emit AppealFeeContribution(_taskID, _side, msg.sender, contribution);
+
+        // Add contribution to reward when the fee funding is successful, otherwise it can be withdrawn later.
+        if (round.paidFees[uint256(_side)] >= totalCost) {
+            round.hasPaid[uint256(_side)] = true;
+            round.feeRewards += round.paidFees[uint256(_side)];
+
+            emit AppealFeePaid(_taskID, _side);
+        }
+
+        // Create an appeal if both sides are funded.
+        if (round.hasPaid[uint256(Party.Translator)] && round.hasPaid[uint256(Party.Challenger)]) {
+            round.feeRewards = round.feeRewards.subCap(appealCost);
+            roundsByTaskID[_taskID].push();
+
+            arbitrator.appeal{value: appealCost}(_task.disputeID, arbitratorExtraData);
+        }
+
+        // Reimburse leftover ETH.
+        msg.sender.send(remainingETH); // Deliberate use of send in order to not block the contract in case of reverting fallback.
+    }
+
+    /**
+     * @dev Returns the contribution value and remainder from available ETH and required amount.
+     * @param _available The amount of ETH available for the contribution.
+     * @param _requiredAmount The amount of ETH required for the contribution.
+     * @return taken The amount of ETH taken.
+     * @return remainder The amount of ETH left from the contribution.
+     */
+    function calculateContribution(uint256 _available, uint256 _requiredAmount)
+        internal
+        pure
+        returns (uint256 taken, uint256 remainder)
+    {
+        if (_requiredAmount > _available) {
+            // Take whatever is available, return 0 as leftover ETH.
+            return (_available, 0);
+        }
+
+        remainder = _available - _requiredAmount;
+        return (_requiredAmount, remainder);
     }
 
     /**
@@ -467,13 +599,89 @@ contract LinguoETH is IArbitrable, IEvidence {
     }
 
     /**
+     * @dev Withdraws contributions of multiple appeal rounds at once.
+     * @notice This function is O(n) where n is the number of rounds. This could exceed the gas limit, therefore this function should be used only as a utility and not be relied upon by other contracts.
+     * @param _taskID The ID of the associated task.
+     * @param _task The task state.
+     * @param _cursor The round from where to start withdrawing.
+     * @param _count The number of rounds to iterate. If set to 0 or a value larger than the number of rounds, iterates until the last round.
+     */
+    function batchWithdrawFeesAndRewards(
+        uint256 _taskID,
+        Task memory _task,
+        address payable _beneficiary,
+        uint256 _cursor,
+        uint256 _count
+    ) external onlyValidTask(_taskID, _task) {
+        for (uint256 i = _cursor; i < roundsByTaskID[_taskID].length && (_count == 0 || i < _cursor + _count); i++) {
+            doWithdrawFeesAndRewards(_taskID, _task, _beneficiary, i);
+        }
+    }
+
+    /**
+     * @dev Witdraws contributions of a specific appeal round.
+     * @notice Reimburses contributions if no appeal was raised; otherwise sends the fee stake rewards and reimbursements proportional to the contributions made to the winner of a dispute.
+     * @param _taskID The ID of the associated task.
+     * @param _task The task state.
+     * @param _beneficiary The address that made contributions.
+     * @param _roundNumber The round from which to withdraw.
+     * @return The withdrawn amount.
+     */
+    function withdrawFeesAndRewards(
+        uint256 _taskID,
+        Task memory _task,
+        address payable _beneficiary,
+        uint256 _roundNumber
+    ) external onlyValidTask(_taskID, _task) returns (uint256) {
+        return doWithdrawFeesAndRewards(_taskID, _task, _beneficiary, _roundNumber);
+    }
+
+    /**
+     * @dev Effectively witdraws contributions of a specific appeal round.
+     * @notice This function is internal because no checks are made on the task state. Caller functions MUST do the check before calling this function.
+     * @param _taskID The ID of the associated task.
+     * @param _task The task state.
+     * @param _beneficiary The address that made contributions.
+     * @param _roundNumber The round from which to withdraw.
+     * @return The withdrawn amount.
+     */
+    function doWithdrawFeesAndRewards(
+        uint256 _taskID,
+        Task memory _task,
+        address payable _beneficiary,
+        uint256 _roundNumber
+    ) internal returns (uint256) {
+        require(_task.status == Status.Resolved, "The task should be resolved.");
+
+        uint256 amount = getWithdrawableAmount(_taskID, _task, _beneficiary, _roundNumber);
+        Round storage round = roundsByTaskID[_taskID][_roundNumber];
+
+        // Reimburse if funding was unsuccessful of the arbitrator refused to rule.
+        if (
+            _task.ruling == uint256(Party.None) ||
+            !(round.hasPaid[uint256(Party.Translator)] && round.hasPaid[uint256(Party.Challenger)])
+        ) {
+            // Since we are reimbursing all parties, we need to zero out the contributions for both sides to avoid double-spending.
+            round.contributions[_beneficiary][uint256(Party.Translator)] = 0;
+            round.contributions[_beneficiary][uint256(Party.Challenger)] = 0;
+        } else {
+            // Since there is a winner, we need to zero out the contribution to the winning side to avoid double-spending.
+            round.contributions[_beneficiary][_task.ruling] = 0;
+        }
+
+        _beneficiary.send(amount); // It is the user responsibility to accept ETH.
+
+        return amount;
+    }
+
+    /**
      * @dev Gets the current price of a specified task.
      * @param _taskID The ID of the task.
      * @param _task The task state.
      * @return price The price of the task.
      */
     function getTaskPrice(uint256 _taskID, Task memory _task)
-        public
+        external
         view
         onlyValidTask(_taskID, _task)
         returns (uint256)
@@ -495,7 +703,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @return The translator deposit.
      */
     function getTranslatorDeposit(uint256 _taskID, Task memory _task)
-        public
+        external
         view
         onlyValidTask(_taskID, _task)
         returns (uint256)
@@ -518,7 +726,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @return The challenger deposit.
      */
     function getChallengerDeposit(uint256 _taskID, Task memory _task)
-        public
+        external
         view
         onlyValidTask(_taskID, _task)
         returns (uint256)
@@ -536,20 +744,20 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _taskID The ID of the task.
      * @return The number of rounds.
      */
-    function getNumberOfRounds(uint256 _taskID) public view returns (uint256) {
+    function getNumberOfRounds(uint256 _taskID) external view returns (uint256) {
         return roundsByTaskID[_taskID].length;
     }
 
     /**
      * @dev Gets the information on a round of a task.
      * @param _taskID The ID of the task.
-     * @param _round The round to be queried.
+     * @param _roundNumber The round to be queried.
      * @return paidFees The amount of fees paid by each side.
      * @return hasPaid Whether each side has paid all the required appeal fees or not.
      * @return feeRewards The total amount to be used as appeal fees and rewards.
      */
-    function getRoundInfo(uint256 _taskID, uint256 _round)
-        public
+    function getRoundInfo(uint256 _taskID, uint256 _roundNumber)
+        external
         view
         returns (
             uint256[3] memory paidFees,
@@ -557,7 +765,7 @@ contract LinguoETH is IArbitrable, IEvidence {
             uint256 feeRewards
         )
     {
-        Round memory round = roundsByTaskID[_taskID][_round];
+        Round memory round = roundsByTaskID[_taskID][_roundNumber];
         return (round.paidFees, round.hasPaid, round.feeRewards);
     }
 
@@ -566,8 +774,71 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _disputeID The ID of the dispute.
      * @return The task dispute.
      */
-    function getTaskDispute(uint256 _disputeID) public view returns (TaskDispute memory) {
+    function getTaskDispute(uint256 _disputeID) external view returns (TaskDispute memory) {
         return taskDisputesByDisputeID[_disputeID];
+    }
+
+    /**
+     * @dev Returns the sum of withdrawable wei from appeal rounds. This function is O(n), where n is the number of rounds of the task. This could exceed the gas limit, therefore this function should only be used for interface display and not by other contracts.
+     * @param _taskID The ID of the associated task.
+     * @param _task The task state.
+     * @param _beneficiary The contributor for which to query.
+     * @return total The total amount of wei available to withdraw.
+     */
+    function getTotalWithdrawableAmount(
+        uint256 _taskID,
+        Task memory _task,
+        address _beneficiary
+    ) external view onlyValidTask(_taskID, _task) returns (uint256 total) {
+        if (_task.status != Status.Resolved) {
+            return total;
+        }
+
+        for (uint256 i = 0; i < roundsByTaskID[_taskID].length; i++) {
+            total += getWithdrawableAmount(_taskID, _task, _beneficiary, i);
+        }
+
+        return total;
+    }
+
+    /**
+     * @dev Returns the sum of withdrawable wei from a specific appeal round.
+     * @param _taskID The ID of the associated task.
+     * @param _task The task state.
+     * @param _beneficiary The contributor for which to query.
+     * @param _roundNumber The number of the round.
+     * @return The amount of wei available to withdraw regarding the round.
+     */
+    function getWithdrawableAmount(
+        uint256 _taskID,
+        Task memory _task,
+        address _beneficiary,
+        uint256 _roundNumber
+    ) internal view returns (uint256) {
+        Round storage round = roundsByTaskID[_taskID][_roundNumber];
+
+        if (!round.hasPaid[uint256(Party.Translator)] || !round.hasPaid[uint256(Party.Challenger)]) {
+            return
+                round.contributions[_beneficiary][uint256(Party.Translator)] +
+                round.contributions[_beneficiary][uint256(Party.Challenger)];
+        } else if (_task.ruling == uint256(Party.None)) {
+            uint256 rewardTranslator = round.paidFees[uint256(Party.Translator)] > 0
+                ? (round.contributions[_beneficiary][uint256(Party.Translator)] * round.feeRewards) /
+                    (round.paidFees[uint256(Party.Translator)] + round.paidFees[uint256(Party.Challenger)])
+                : 0;
+            uint256 rewardChallenger = round.paidFees[uint256(Party.Challenger)] > 0
+                ? (round.contributions[_beneficiary][uint256(Party.Challenger)] * round.feeRewards) /
+                    (round.paidFees[uint256(Party.Translator)] + round.paidFees[uint256(Party.Challenger)])
+                : 0;
+
+            return rewardTranslator + rewardChallenger;
+        } else {
+            return
+                round.paidFees[_task.ruling] > 0
+                    ? (round.contributions[_beneficiary][_task.ruling] * round.feeRewards) /
+                        round.paidFees[_task.ruling]
+                    : 0;
+        }
     }
 
     /**
