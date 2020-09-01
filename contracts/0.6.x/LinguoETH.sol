@@ -112,7 +112,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 minPrice; // Minimal price for the translation. When the task is created it has minimal price that gradually increases such as it reaches maximal price at deadline.
         uint256 maxPrice; // Maximal price for the translation and also value that must be deposited by the requester.
         uint256 requesterDeposit; // The deposit requester makes when creating the task. Once a task is assigned this deposit will be partially reimbursed and its value replaced by task price.
-        uint256 sumDeposit; // The sum of the deposits of translator and challenger, if any. This value (minus arbitration fees) will be paid to the party that wins the dispute.
+        uint256 translatorDeposit; // The sum of the deposits of translator and challenger, if any. This value (minus arbitration fees) will be paid to the party that wins the dispute.
         uint256 disputeID; // The ID of the dispute created in arbitrator contract.
         uint256 ruling; // Ruling given to the dispute of the task by the arbitrator.
         address payable[3] parties; // Translator and challenger of the task.
@@ -319,7 +319,7 @@ contract LinguoETH is IArbitrable, IEvidence {
 
         // Update requester's deposit since we reimbursed him the difference between maximal and actual price.
         _task.requesterDeposit = price;
-        _task.sumDeposit += translatorDeposit;
+        _task.translatorDeposit += translatorDeposit;
 
         taskHashes[_taskID] = hashTaskState(_task);
 
@@ -367,12 +367,12 @@ contract LinguoETH is IArbitrable, IEvidence {
         require(block.timestamp - _task.lastInteraction > _task.submissionTimeout, "Deadline has not passed");
 
         // Requester gets his deposit back and also the deposit of the translator, if there was one.
-        // Note that sumDeposit can't contain challenger's deposit until the task is in InDispute status.
-        uint256 amount = _task.requesterDeposit + _task.sumDeposit;
+        // Note that translatorDeposit can't contain challenger's deposit until the task is in InDispute status.
+        uint256 amount = _task.requesterDeposit + _task.translatorDeposit;
 
         _task.status = Status.Resolved;
         _task.requesterDeposit = 0;
-        _task.sumDeposit = 0;
+        _task.translatorDeposit = 0;
 
         taskHashes[_taskID] = hashTaskState(_task);
 
@@ -392,12 +392,12 @@ contract LinguoETH is IArbitrable, IEvidence {
         require(block.timestamp - _task.lastInteraction > reviewTimeout, "Still in review period");
 
         // Translator gets the price of the task and his deposit back.
-        // Note that sumDeposit can't contain challenger's deposit until the task is in InDispute status.
-        uint256 amount = _task.requesterDeposit + _task.sumDeposit;
+        // Note that translatorDeposit can't contain challenger's deposit until the task is in InDispute status.
+        uint256 amount = _task.requesterDeposit + _task.translatorDeposit;
 
         _task.status = Status.Resolved;
         _task.requesterDeposit = 0;
-        _task.sumDeposit = 0;
+        _task.translatorDeposit = 0;
 
         taskHashes[_taskID] = hashTaskState(_task);
 
@@ -426,7 +426,6 @@ contract LinguoETH is IArbitrable, IEvidence {
 
         _task.status = Status.InDispute;
         _task.parties[uint256(Party.Challenger)] = msg.sender;
-        _task.sumDeposit = _task.sumDeposit.addCap(arbitrationCost).subCap(arbitrationCost);
         _task.disputeID = arbitrator.createDispute{value: arbitrationCost}(2, arbitratorExtraData);
 
         taskHashes[_taskID] = hashTaskState(_task);
@@ -612,30 +611,30 @@ contract LinguoETH is IArbitrable, IEvidence {
 
         uint256 amount;
         uint256 requesterDeposit = _task.requesterDeposit;
-        uint256 sumDeposit = _task.sumDeposit;
+        uint256 translatorDeposit = _task.translatorDeposit;
 
         _task.status = Status.Resolved;
         _task.ruling = taskDispute.ruling;
         _task.requesterDeposit = 0;
-        _task.sumDeposit = 0;
+        _task.translatorDeposit = 0;
 
         taskHashes[_taskID] = hashTaskState(_task);
 
         if (taskDispute.ruling == uint256(Party.None)) {
             /**
-             * @notice The value of `sumDeposit` is split between the parties.
+             * @notice The value of `translatorDeposit` is split between the parties.
              * If the sum is uneven, the value of 1 wei will remain locked in the contract.
              */
-            amount = sumDeposit / 2;
+            amount = translatorDeposit / 2;
             _task.parties[uint256(Party.Translator)].send(amount);
             _task.parties[uint256(Party.Challenger)].send(amount);
             _task.requester.send(requesterDeposit);
         } else if (taskDispute.ruling == uint256(Party.Translator)) {
-            amount = requesterDeposit.addCap(sumDeposit);
+            amount = requesterDeposit.addCap(translatorDeposit);
             _task.parties[uint256(Party.Translator)].send(amount);
         } else {
             _task.requester.send(requesterDeposit);
-            _task.parties[uint256(Party.Challenger)].send(sumDeposit);
+            _task.parties[uint256(Party.Challenger)].send(translatorDeposit);
         }
 
         emit TaskResolved(_taskID, "dispute-settled");
@@ -911,7 +910,7 @@ contract LinguoETH is IArbitrable, IEvidence {
                     _task.minPrice,
                     _task.maxPrice,
                     _task.requesterDeposit,
-                    _task.sumDeposit,
+                    _task.translatorDeposit,
                     _task.disputeID,
                     _task.ruling,
                     _task.parties

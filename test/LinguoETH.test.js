@@ -147,7 +147,7 @@ describe("Token contract", async () => {
       expect(newTask.minPrice).to.equal(taskMinPrice, "Invalid min price");
       expect(newTask.maxPrice).to.equal(taskMaxPrice, "Wron max price");
       expect(newTask.requesterDeposit).to.equal(taskMaxPrice, "Invalid requester deposit");
-      expect(newTask.sumDeposit).to.equal(0, "Invalid sum depoist");
+      expect(newTask.translatorDeposit).to.equal(0, "Invalid translator deposit");
       expect(newTask.disputeID).to.equal(0, "Invalid dispute ID");
       expect(newTask.ruling).to.equal(0, "Invalid ruling");
       expect(newTask.parties).to.deep.equal(Array(3).fill(ethers.constants.AddressZero), "Invalid parties");
@@ -315,7 +315,7 @@ describe("Token contract", async () => {
       expect(actualTask.status).to.equal(TaskStatus.Assigned, "Invalid status");
       expect(actualTask.parties[TaskParty.Translator]).to.equal(await translator.getAddress(), "Invalid translator");
       expect(actualTask.requesterDeposit).to.equal(assignedPrice, "Invalid price");
-      expect(actualTask.sumDeposit.sub(requiredDeposit).abs()).to.be.lt(delta, "Invalid sumDeposit");
+      expect(actualTask.translatorDeposit.sub(requiredDeposit).abs()).to.be.lt(delta, "Invalid translatorDeposit");
       expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
     });
 
@@ -455,7 +455,7 @@ describe("Token contract", async () => {
 
       expect(updatedTask.status).to.equal(TaskStatus.Resolved, "Invalid task status");
       expect(updatedTask.requesterDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
-      expect(updatedTask.sumDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
+      expect(updatedTask.translatorDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
       expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
     });
 
@@ -464,7 +464,7 @@ describe("Token contract", async () => {
       await increaseTime(submissionTimeout + 3600);
 
       // The requester takes the translator deposit as well.
-      const expectedBalanceChange = assignedTask.requesterDeposit.add(assignedTask.sumDeposit);
+      const expectedBalanceChange = assignedTask.requesterDeposit.add(assignedTask.translatorDeposit);
 
       await expect(() => contract.reimburseRequester(taskID, assignedTask)).to.changeBalance(
         requester,
@@ -514,14 +514,14 @@ describe("Token contract", async () => {
 
       expect(resolvedTask.status).to.equal(TaskStatus.Resolved, "Invalid task status");
       expect(resolvedTask.requesterDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
-      expect(resolvedTask.sumDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
+      expect(resolvedTask.translatorDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
       expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
     });
 
     it("Should pay the translator when the translation is accepted", async () => {
       const translatorBalanceBefore = await translator.getBalance();
       const taskPrice = taskInReview.requesterDeposit;
-      const translatorDeposit = taskInReview.sumDeposit;
+      const translatorDeposit = taskInReview.translatorDeposit;
       const balanceChange = taskPrice.add(translatorDeposit);
 
       await acceptTranslationHelper(taskID, taskInReview);
@@ -547,7 +547,7 @@ describe("Token contract", async () => {
     it("Should revert when task data does not match the stored task hash", async () => {
       const corruptedTask = {
         ...taskInReview,
-        sumDeposit: taskMaxPrice.mul(BigNumber.from(2)),
+        translatorDeposit: taskMaxPrice.mul(BigNumber.from(2)),
       };
 
       await expect(contract.acceptTranslation(taskID, corruptedTask)).to.be.revertedWith(
@@ -596,8 +596,8 @@ describe("Token contract", async () => {
     it("Should update the task state when someone challenges the translation", async () => {
       const requiredDeposit = await contract.getChallengerDeposit(taskID, sumbittedTask);
       const arbitrationCost = await arbitrator.arbitrationCost(arbitratorExtraData);
-      const previousSumDeposit = sumbittedTask.sumDeposit;
-      const expectedFinalSumDeposit = previousSumDeposit.add(requiredDeposit).sub(arbitrationCost);
+      const previousTranslatorDeposit = sumbittedTask.translatorDeposit;
+      const expectedFinalTranslatorDeposit = previousTranslatorDeposit.add(requiredDeposit).sub(arbitrationCost);
 
       const [actualTaskID, actualTask] = await challengeTranslationHelper(taskID, sumbittedTask, translatedText);
       const actualHash = await contract.taskHashes(actualTaskID);
@@ -606,7 +606,7 @@ describe("Token contract", async () => {
       expect(actualTaskID).to.equal(taskID, "Assigned wrong task");
       expect(actualTask.status).to.equal(TaskStatus.InDispute, "Invalid status");
       expect(actualTask.parties[TaskParty.Challenger]).to.equal(await challenger.getAddress(), "Invalid challenger");
-      expect(actualTask.sumDeposit).to.equal(expectedFinalSumDeposit, "Invalid sumDeposit");
+      expect(actualTask.translatorDeposit).to.equal(expectedFinalTranslatorDeposit, "Invalid translatorDeposit");
       expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
     });
 
@@ -685,7 +685,7 @@ describe("Token contract", async () => {
     it("Should revert when task data does not match the stored task hash", async () => {
       const corruptedTask = {
         ...sumbittedTask,
-        sumDeposit: sumbittedTask.sumDeposit.mul(BigNumber.from(2)),
+        translatorDeposit: sumbittedTask.translatorDeposit.mul(BigNumber.from(2)),
       };
 
       await expect(contract.assignTask(taskID, corruptedTask)).to.be.revertedWith("Task does not match stored hash");
@@ -794,7 +794,7 @@ describe("Token contract", async () => {
       expect(actualTask.status).to.equal(TaskStatus.Resolved, "Invalid status");
       expect(actualTask.ruling).to.equal(BigNumber.from(ruling), "Invalid ruling");
       expect(actualTask.requesterDeposit).to.equal(ZERO, "Invalid requesterDeposit");
-      expect(actualTask.sumDeposit).to.equal(ZERO, "Invalid sumDeposit");
+      expect(actualTask.translatorDeposit).to.equal(ZERO, "Invalid translatorDeposit");
       expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
     });
 
@@ -826,8 +826,8 @@ describe("Token contract", async () => {
 
       const expectedBalances = {
         requester: balancesBefore.requester.add(challengedTask.requesterDeposit),
-        translator: balancesBefore.translator.add(challengedTask.sumDeposit.div(BigNumber.from(2))),
-        challenger: balancesBefore.challenger.add(challengedTask.sumDeposit.div(BigNumber.from(2))),
+        translator: balancesBefore.translator.add(challengedTask.translatorDeposit.div(BigNumber.from(2))),
+        challenger: balancesBefore.challenger.add(challengedTask.translatorDeposit.div(BigNumber.from(2))),
       };
 
       const delta = BigNumber.from(1000);
@@ -856,7 +856,9 @@ describe("Token contract", async () => {
 
       const expectedBalances = {
         requester: balancesBefore.requester,
-        translator: balancesBefore.translator.add(challengedTask.requesterDeposit).add(challengedTask.sumDeposit),
+        translator: balancesBefore.translator
+          .add(challengedTask.requesterDeposit)
+          .add(challengedTask.translatorDeposit),
         challenger: balancesBefore.challenger,
       };
 
@@ -887,7 +889,7 @@ describe("Token contract", async () => {
       const expectedBalances = {
         requester: balancesBefore.requester.add(challengedTask.requesterDeposit),
         translator: balancesBefore.translator,
-        challenger: balancesBefore.challenger.add(challengedTask.sumDeposit),
+        challenger: balancesBefore.challenger.add(challengedTask.translatorDeposit),
       };
 
       const delta = BigNumber.from(1000);
@@ -1151,7 +1153,9 @@ describe("Token contract", async () => {
        */
       const expectedBalances = {
         requester: balancesBefore.requester,
-        translator: balancesBefore.translator.add(challengedTask.requesterDeposit).add(challengedTask.sumDeposit),
+        translator: balancesBefore.translator
+          .add(challengedTask.requesterDeposit)
+          .add(challengedTask.translatorDeposit),
         challenger: balancesBefore.challenger,
       };
 
