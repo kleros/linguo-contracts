@@ -16,7 +16,6 @@ describe("Token contract", async () => {
   const appealTimeout = 100;
   const reviewTimeout = 2400;
   const translationMultiplier = 1000;
-  const challengeMultiplier = 2000;
   const sharedMultiplier = 5000;
   const winnerMultiplier = 3000;
   const loserMultiplier = 7000;
@@ -68,7 +67,6 @@ describe("Token contract", async () => {
       arbitratorExtraData,
       reviewTimeout,
       translationMultiplier,
-      challengeMultiplier,
       sharedMultiplier,
       winnerMultiplier,
       loserMultiplier
@@ -103,10 +101,6 @@ describe("Token contract", async () => {
       expect(await contract.translationMultiplier()).to.equal(
         translationMultiplier,
         "Translation multiplier not properly set"
-      );
-      expect(await contract.challengeMultiplier()).to.equal(
-        challengeMultiplier,
-        "Challenge multiplier not properly set"
       );
       expect(await contract.sharedStakeMultiplier()).to.equal(sharedMultiplier, "Shared multiplier not properly set");
       expect(await contract.winnerStakeMultiplier()).to.equal(winnerMultiplier, "Winner multiplier not properly set");
@@ -633,7 +627,7 @@ describe("Token contract", async () => {
     it("Should update the task dispute state of the translation", async () => {
       const [_, challengedTask] = await challengeTranslationHelper(taskID, sumbittedTask, translatedText);
 
-      const taskDispute = await contract.getTaskDispute(challengedTask.disputeID);
+      const taskDispute = await contract.taskDisputesByDisputeID(challengedTask.disputeID);
 
       expect(taskDispute.exists).to.equal(true);
       expect(taskDispute.hasRuling).to.equal(false);
@@ -756,12 +750,12 @@ describe("Token contract", async () => {
       challengedTask = updatedTask;
     });
 
-    it("Should emit an InterimRuling event when the arbitrator rules the dispute", async () => {
+    it("Should emit a Ruling event when the arbitrator rules the dispute", async () => {
       const ruling = DisputeRuling.TranslationRejected;
       const {txPromise} = await giveFinalRulingHelper(challengedTask.disputeID, ruling);
 
       await expect(txPromise)
-        .to.emit(contract, "InterimRuling")
+        .to.emit(contract, "Ruling")
         .withArgs(arbitrator.address, challengedTask.disputeID, ruling);
     });
 
@@ -769,7 +763,7 @@ describe("Token contract", async () => {
       const ruling = DisputeRuling.TranslationApproved;
       await giveFinalRulingHelper(challengedTask.disputeID, ruling);
 
-      const taskDispute = await contract.getTaskDispute(challengedTask.disputeID);
+      const taskDispute = await contract.taskDisputesByDisputeID(challengedTask.disputeID);
       expect(taskDispute.exists).to.equal(true, "Task dispute should exist");
       expect(taskDispute.hasRuling).to.equal(true, "Task dispute should have ruling");
       expect(taskDispute.taskID).to.equal(taskID, "Wrong task");
@@ -802,15 +796,6 @@ describe("Token contract", async () => {
       expect(actualTask.requesterDeposit).to.equal(ZERO, "Invalid requesterDeposit");
       expect(actualTask.sumDeposit).to.equal(ZERO, "Invalid sumDeposit");
       expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
-    });
-
-    it("Should emit a Ruling event when the ruling is executed", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-      await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      const [_, actualTask, {txPromise}] = await await executeRulingHelper(taskID, challengedTask);
-
-      await expect(txPromise).to.emit(contract, "Ruling").withArgs(arbitrator.address, actualTask.disputeID, ruling);
     });
 
     it("Should emit a TaskResolved event with the correct reason when the ruling is executed", async () => {
@@ -1115,7 +1100,7 @@ describe("Token contract", async () => {
       await expect(txPromise).to.be.revertedWith("Appeal period is over");
     });
 
-    it("Should change the ruling upon executeRuling when the loser paid the full appeal fee while the winner did not", async () => {
+    it("Should change the ruling when the loser paid the full appeal fee while the winner did not", async () => {
       const ruling = DisputeRuling.TranslationRejected;
       const loserParty = TaskParty.Translator;
       const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
@@ -1123,12 +1108,12 @@ describe("Token contract", async () => {
       await giveRulingHelper(challengedTask.disputeID, ruling);
       await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
       await increaseTime(appealTimeout + 1);
-      await giveRulingHelper(challengedTask.disputeID, ruling);
+      const {txPromise} = await giveRulingHelper(challengedTask.disputeID, ruling);
 
-      const [_, actualTask, {txPromise}] = await executeRulingHelper(taskID, challengedTask);
+      const [_, actualTask] = await executeRulingHelper(taskID, challengedTask);
 
       const expectedRuling = DisputeRuling.TranslationApproved;
-      const taskDispute = await contract.getTaskDispute(taskID);
+      const taskDispute = await contract.taskDisputesByDisputeID(taskID);
 
       await expect(txPromise)
         .to.emit(contract, "Ruling")

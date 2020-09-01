@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-pragma solidity ^0.6.0;
+pragma solidity >=0.6.9;
 pragma experimental ABIEncoderV2;
 
 import "@kleros/erc-792/contracts/IArbitrable.sol";
@@ -35,7 +35,7 @@ contract LinguoETH is IArbitrable, IEvidence {
     /**
      * @dev To be emitted whenever a task state is updated.
      * @param _taskID The ID of the changed task.
-     * @param _task The full task after creation.
+     * @param _task The full task data after creation.
      */
     event TaskStateUpdated(uint256 indexed _taskID, Task _task);
 
@@ -48,7 +48,7 @@ contract LinguoETH is IArbitrable, IEvidence {
 
     /**
      * @dev To be emitted when a translator is assigned to a task.
-     * @param _taskID The ID of the newly created task.
+     * @param _taskID The ID of the assigned task.
      * @param _translator The address that was assigned to the task.
      * @param _price The price of the task at the moment of the assignment.
      */
@@ -75,17 +75,6 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _reason Short description of what caused the task to be solved. One of: 'translation-accepted' | 'requester-reimbursed' | 'dispute-settled'
      */
     event TaskResolved(uint256 indexed _taskID, string _reason);
-
-    /**
-     * @dev To be emitted when the arbitrator rules a given dispute.
-     * @notice When there is an appeal and one of the sides fails to pay the whole appeal fees,
-     * the other side automatically wins, even if they had lost the previous rounds.
-     * The actual outcome will only be known after executing the `executeRuling` method for the task.
-     * @param _arbitrator The arbitrator address.
-     * @param _disputeID The ID of the dispute.
-     * @param _ruling The ruling of the arbitrator for that dispute.
-     */
-    event InterimRuling(IArbitrator indexed _arbitrator, uint256 indexed _disputeID, uint256 _ruling);
 
     /**
      * @dev To be emitted when someone contributes to the appeal process.
@@ -129,6 +118,9 @@ contract LinguoETH is IArbitrable, IEvidence {
         address payable[3] parties; // Translator and challenger of the task.
     }
 
+    /**
+     * @dev Tracks the state of eventual disputes created by a challenge.
+     */
     struct TaskDispute {
         bool exists; // Required to control whether a given dispute for a task exists.
         bool hasRuling; // Required to differentiate between having no ruling and a RefusedToRule ruling.
@@ -136,6 +128,9 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 ruling; // The ruling given by the arbitrator.
     }
 
+    /**
+     * @dev Tracks the state of an appeal round.
+     */
     struct Round {
         uint256[3] paidFees; // Tracks the fees paid by each side in this round.
         bool[3] hasPaid; // True when the side has fully paid its fee. False otherwise.
@@ -152,16 +147,13 @@ contract LinguoETH is IArbitrable, IEvidence {
     /// @dev The arbitrator extra data.
     bytes public arbitratorExtraData;
 
-    /// @dev Time in seconds, during which the submitted translation can be challenged.
+    /// @dev Time in seconds during which the submitted translation can be challenged.
     uint256 public reviewTimeout;
 
     /// @notice All multipliers below are in basis points.
 
     /// @dev Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
     uint256 public translationMultiplier;
-
-    /// @dev Multiplier for calculating the value of the deposit challenger must pay to challenge a translation.
-    uint256 public challengeMultiplier;
 
     /// @dev Multiplier for calculating the appeal fee that must be paid by submitter in the case where there isn't a winner and loser (e.g. when the arbitrator ruled "refuse to arbitrate").
     uint256 public sharedStakeMultiplier;
@@ -172,21 +164,30 @@ contract LinguoETH is IArbitrable, IEvidence {
     /// @dev  Multiplier for calculating the appeal fee of the party that lost the previous round.
     uint256 public loserStakeMultiplier;
 
-    /// @dev Stores all created tasks.
+    /// @dev Stores the hashes of all tasks.
     bytes32[] public taskHashes;
 
-    /// @dev Maps a taskID to its respective rounds.
+    /// @dev Maps a taskID to its respective appeal rounds.
     mapping(uint256 => Round[]) public roundsByTaskID;
 
     /// @dev Maps a disputeID to its respective task dispute.
     mapping(uint256 => TaskDispute) public taskDisputesByDisputeID;
 
+    /**
+     * @notice _arbitrator is trusted and will not re-enter. It also must support and appeal period.
+
+     * @param _arbitrator An instance of an arbitrator as defined in ERC-792.
+     * @param _reviewTimeout Time in seconds during which the submitted translation can be challenged.
+     * @param _translationMultiplier Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
+     * @param _sharedStakeMultiplier  Multiplier for calculating the appeal fee that must be paid by submitter in the case where there isn't a winner and loser (e.g. when the arbitrator ruled "refuse to arbitrate").
+     * @param _winnerStakeMultiplier Multiplier for calculating the appeal fee of the party that won the previous round.
+     * @param _loserStakeMultiplier Multiplier for calculating the appeal fee of the party that lost the previous round.
+     */
     constructor(
         IArbitrator _arbitrator,
         bytes memory _arbitratorExtraData,
         uint256 _reviewTimeout,
         uint256 _translationMultiplier,
-        uint256 _challengeMultiplier,
         uint256 _sharedStakeMultiplier,
         uint256 _winnerStakeMultiplier,
         uint256 _loserStakeMultiplier
@@ -196,7 +197,6 @@ contract LinguoETH is IArbitrable, IEvidence {
         arbitratorExtraData = _arbitratorExtraData;
         reviewTimeout = _reviewTimeout;
         translationMultiplier = _translationMultiplier;
-        challengeMultiplier = _challengeMultiplier;
         sharedStakeMultiplier = _sharedStakeMultiplier;
         winnerStakeMultiplier = _winnerStakeMultiplier;
         loserStakeMultiplier = _loserStakeMultiplier;
@@ -205,6 +205,59 @@ contract LinguoETH is IArbitrable, IEvidence {
     modifier onlyValidTask(uint256 _taskID, Task memory _task) {
         require(taskHashes[_taskID] == hashTaskState(_task), "Task does not match stored hash");
         _;
+    }
+
+    modifier onlyGovernor() {
+        require(msg.sender == governor, "Only governor is allowed");
+        _;
+    }
+
+    /**
+     * @dev Changes the governor of this contract.
+     * @param _governor A new governor.
+     */
+    function changeGovernor(address _governor) public onlyGovernor {
+        governor = _governor;
+    }
+
+    /**
+     * @dev Changes the time allocated for review phase.
+     * @param _reviewTimeout A new value of the time allotted for reviewing a translation. In seconds.
+     */
+    function changeReviewTimeout(uint256 _reviewTimeout) public onlyGovernor {
+        reviewTimeout = _reviewTimeout;
+    }
+
+    /**
+     * @dev Changes the multiplier for translator's deposit.
+     * @param _translationMultiplier A new value of the multiplier for calculating translator's deposit. In basis points.
+     */
+    function changeTranslationMultiplier(uint256 _translationMultiplier) public onlyGovernor {
+        translationMultiplier = _translationMultiplier;
+    }
+
+    /**
+     * @dev Changes the percentage of arbitration fees that must be paid by parties as a fee stake if there was no winner and loser in the previous round.
+     * @param _sharedStakeMultiplier A new value of the multiplier of the appeal cost in case when there is no winner/loser in previous round. In basis point.
+     */
+    function changeSharedStakeMultiplier(uint256 _sharedStakeMultiplier) public onlyGovernor {
+        sharedStakeMultiplier = _sharedStakeMultiplier;
+    }
+
+    /**
+     * @dev Changes the percentage of arbitration fees that must be paid as a fee stake by the party that won the previous round.
+     * @param _winnerStakeMultiplier A new value of the multiplier of the appeal cost that the winner of the previous round has to pay. In basis points.
+     */
+    function changeWinnerStakeMultiplier(uint256 _winnerStakeMultiplier) public onlyGovernor {
+        winnerStakeMultiplier = _winnerStakeMultiplier;
+    }
+
+    /**
+     * @dev Changes the percentage of arbitration fees that must be paid as a fee stake by the party that lost the previous round.
+     * @param _loserStakeMultiplier A new value of the multiplier of the appeal cost that the party that lost the previous round has to pay. In basis points.
+     */
+    function changeLoserStakeMultiplier(uint256 _loserStakeMultiplier) public onlyGovernor {
+        loserStakeMultiplier = _loserStakeMultiplier;
     }
 
     /**
@@ -219,7 +272,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _deadline,
         uint256 _minPrice,
         string calldata _metaEvidence
-    ) external payable returns (uint256) {
+    ) public payable returns (uint256) {
         require(msg.value >= _minPrice, "Deposit value too low");
         require(_deadline > block.timestamp, "Deadline must be in the future");
 
@@ -247,7 +300,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _taskID The ID of the task.
      * @param _task The task state.
      */
-    function assignTask(uint256 _taskID, Task memory _task) external payable onlyValidTask(_taskID, _task) {
+    function assignTask(uint256 _taskID, Task memory _task) public payable onlyValidTask(_taskID, _task) {
         require(block.timestamp - _task.lastInteraction <= _task.submissionTimeout, "Deadline has passed");
         require(_task.status == Status.Created, "Invalid task status");
 
@@ -290,7 +343,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _taskID,
         Task memory _task,
         string calldata _translatedText
-    ) external onlyValidTask(_taskID, _task) {
+    ) public onlyValidTask(_taskID, _task) {
         require(_task.status == Status.Assigned, "Invalid task status");
         require(block.timestamp - _task.lastInteraction <= _task.submissionTimeout, "Deadline has passed");
         require(msg.sender == _task.parties[uint256(Party.Translator)], "Only translator is allowed");
@@ -309,7 +362,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _taskID The ID of the task.
      * @param _task The task state.
      */
-    function reimburseRequester(uint256 _taskID, Task memory _task) external onlyValidTask(_taskID, _task) {
+    function reimburseRequester(uint256 _taskID, Task memory _task) public onlyValidTask(_taskID, _task) {
         require(_task.status < Status.InReview, "Translation was delivered");
         require(block.timestamp - _task.lastInteraction > _task.submissionTimeout, "Deadline has not passed");
 
@@ -334,7 +387,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _taskID The ID of the task.
      * @param _task The task state.
      */
-    function acceptTranslation(uint256 _taskID, Task memory _task) external onlyValidTask(_taskID, _task) {
+    function acceptTranslation(uint256 _taskID, Task memory _task) public onlyValidTask(_taskID, _task) {
         require(_task.status == Status.InReview, "Invalid task status");
         require(block.timestamp - _task.lastInteraction > reviewTimeout, "Still in review period");
 
@@ -364,19 +417,16 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _taskID,
         Task memory _task,
         string calldata _evidence
-    ) external payable onlyValidTask(_taskID, _task) {
+    ) public payable onlyValidTask(_taskID, _task) {
         uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-        uint256 challengeDeposit = arbitrationCost.addCap(
-            (challengeMultiplier.mulCap(_task.requesterDeposit)) / MULTIPLIER_DIVISOR
-        );
 
         require(_task.status == Status.InReview, "Invalid task status");
         require(block.timestamp - _task.lastInteraction <= reviewTimeout, "Review period has passed");
-        require(msg.value >= challengeDeposit, "Deposit value too low");
+        require(msg.value >= arbitrationCost, "Deposit value too low");
 
         _task.status = Status.InDispute;
         _task.parties[uint256(Party.Challenger)] = msg.sender;
-        _task.sumDeposit = _task.sumDeposit.addCap(challengeDeposit).subCap(arbitrationCost);
+        _task.sumDeposit = _task.sumDeposit.addCap(arbitrationCost).subCap(arbitrationCost);
         _task.disputeID = arbitrator.createDispute{value: arbitrationCost}(2, arbitratorExtraData);
 
         taskHashes[_taskID] = hashTaskState(_task);
@@ -386,7 +436,7 @@ contract LinguoETH is IArbitrable, IEvidence {
 
         roundsByTaskID[_taskID].push();
 
-        uint256 remainder = msg.value - challengeDeposit;
+        uint256 remainder = msg.value - arbitrationCost;
         msg.sender.send(remainder);
 
         emit Dispute(arbitrator, _task.disputeID, _taskID, _taskID);
@@ -408,7 +458,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _taskID,
         Task memory _task,
         string calldata _evidence
-    ) external onlyValidTask(_taskID, _task) {
+    ) public onlyValidTask(_taskID, _task) {
         /**
          * @notice When `rule` was called, but `executeRuling` was not yet,
          * the task is still in InDispute status, but the dispute is already settled.
@@ -430,7 +480,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _taskID,
         Task memory _task,
         Party _side
-    ) external payable onlyValidTask(_taskID, _task) {
+    ) public payable onlyValidTask(_taskID, _task) {
         require(_side == Party.Translator || _side == Party.Challenger, "Invalid side");
         require(_task.status == Status.InDispute, "No dispute to appeal");
         require(
@@ -439,7 +489,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         );
 
         (uint256 appealPeriodStart, uint256 appealPeriodEnd) = arbitrator.appealPeriod(_task.disputeID);
-        require(now >= appealPeriodStart && now < appealPeriodEnd, "Appeal period is over");
+        require(block.timestamp >= appealPeriodStart && block.timestamp < appealPeriodEnd, "Appeal period is over");
 
         uint256 winner = arbitrator.currentRuling(_task.disputeID);
         uint256 multiplier;
@@ -449,7 +499,7 @@ contract LinguoETH is IArbitrable, IEvidence {
             multiplier = sharedStakeMultiplier;
         } else {
             require(
-                now - appealPeriodStart < (appealPeriodEnd - appealPeriodStart) / 2,
+                block.timestamp - appealPeriodStart < (appealPeriodEnd - appealPeriodStart) / 2,
                 "1st half appeal period is over"
             );
             multiplier = loserStakeMultiplier;
@@ -515,39 +565,19 @@ contract LinguoETH is IArbitrable, IEvidence {
     }
 
     /**
-     * @notice Ruling 0 is reserved for "Refused to Rule".
      * @dev Registers a ruling for a dispute. Can only be called by the arbitrator.
+     * @notice Ruling 0 is reserved for "Refused to Rule".
      * @param _disputeID ID of the dispute in the Arbitrator contract.
      * @param _ruling Ruling given by the arbitrator.
      */
-    function rule(uint256 _disputeID, uint256 _ruling) external override {
+    function rule(uint256 _disputeID, uint256 _ruling) public override {
         require(msg.sender == address(arbitrator), "Only arbitrator allowed");
 
         TaskDispute storage taskDispute = taskDisputesByDisputeID[_disputeID];
         require(taskDispute.exists, "Dispute does not exist");
         require(taskDispute.hasRuling == false, "Dispute already settled");
 
-        taskDispute.hasRuling = true;
-        taskDispute.ruling = _ruling;
-
-        emit InterimRuling(IArbitrator(msg.sender), _disputeID, _ruling);
-    }
-
-    /**
-     * @dev Effectively executes the ruling given by the arbitrator for a task.
-     * @param _taskID The ID of the task.
-     * @param _task The task state.
-     */
-    function executeRuling(uint256 _taskID, Task memory _task) external onlyValidTask(_taskID, _task) {
-        require(_task.status == Status.InDispute, "Invalid task status");
-
-        TaskDispute storage taskDispute = taskDisputesByDisputeID[_task.disputeID];
-        require(taskDispute.taskID == _taskID, "Dispute references other task");
-        require(taskDispute.hasRuling, "Arbitrator has not ruled yet");
-
-        uint256 finalRuling = taskDispute.ruling;
-
-        Round[] storage rounds = roundsByTaskID[_taskID];
+        Round[] storage rounds = roundsByTaskID[taskDispute.taskID];
         Round storage round = rounds[rounds.length - 1];
 
         /**
@@ -557,25 +587,41 @@ contract LinguoETH is IArbitrable, IEvidence {
          * When the last party pays its fees, a new round is automatically created.
          */
         if (round.hasPaid[uint256(Party.Translator)] == true) {
-            finalRuling = uint256(Party.Translator);
-            taskDispute.ruling = finalRuling;
+            taskDispute.ruling = uint256(Party.Translator);
         } else if (round.hasPaid[uint256(Party.Challenger)] == true) {
-            finalRuling = uint256(Party.Challenger);
-            taskDispute.ruling = finalRuling;
+            taskDispute.ruling = uint256(Party.Challenger);
+        } else {
+            taskDispute.ruling = _ruling;
         }
+
+        taskDispute.hasRuling = true;
+
+        emit Ruling(arbitrator, _disputeID, taskDispute.ruling);
+    }
+
+    /**
+     * @dev Effectively executes the ruling given by the arbitrator for a task.
+     * @param _taskID The ID of the task.
+     * @param _task The task state.
+     */
+    function executeRuling(uint256 _taskID, Task memory _task) public onlyValidTask(_taskID, _task) {
+        require(_task.status == Status.InDispute, "Invalid task status");
+
+        TaskDispute storage taskDispute = taskDisputesByDisputeID[_task.disputeID];
+        require(taskDispute.hasRuling, "Arbitrator has not ruled yet");
 
         uint256 amount;
         uint256 requesterDeposit = _task.requesterDeposit;
         uint256 sumDeposit = _task.sumDeposit;
 
         _task.status = Status.Resolved;
-        _task.ruling = finalRuling;
+        _task.ruling = taskDispute.ruling;
         _task.requesterDeposit = 0;
         _task.sumDeposit = 0;
 
         taskHashes[_taskID] = hashTaskState(_task);
 
-        if (finalRuling == uint256(Party.None)) {
+        if (taskDispute.ruling == uint256(Party.None)) {
             /**
              * @notice The value of `sumDeposit` is split between the parties.
              * If the sum is uneven, the value of 1 wei will remain locked in the contract.
@@ -583,9 +629,8 @@ contract LinguoETH is IArbitrable, IEvidence {
             amount = sumDeposit / 2;
             _task.parties[uint256(Party.Translator)].send(amount);
             _task.parties[uint256(Party.Challenger)].send(amount);
-
             _task.requester.send(requesterDeposit);
-        } else if (finalRuling == uint256(Party.Translator)) {
+        } else if (taskDispute.ruling == uint256(Party.Translator)) {
             amount = requesterDeposit.addCap(sumDeposit);
             _task.parties[uint256(Party.Translator)].send(amount);
         } else {
@@ -593,7 +638,6 @@ contract LinguoETH is IArbitrable, IEvidence {
             _task.parties[uint256(Party.Challenger)].send(sumDeposit);
         }
 
-        emit Ruling(arbitrator, _task.disputeID, finalRuling);
         emit TaskResolved(_taskID, "dispute-settled");
         emit TaskStateUpdated(_taskID, _task);
     }
@@ -612,15 +656,20 @@ contract LinguoETH is IArbitrable, IEvidence {
         address payable _beneficiary,
         uint256 _cursor,
         uint256 _count
-    ) external onlyValidTask(_taskID, _task) {
+    ) public onlyValidTask(_taskID, _task) {
+        require(_task.status == Status.Resolved, "The task should be resolved.");
+
+        uint256 amount;
         for (uint256 i = _cursor; i < roundsByTaskID[_taskID].length && (_count == 0 || i < _cursor + _count); i++) {
-            doWithdrawFeesAndRewards(_taskID, _task, _beneficiary, i);
+            amount += registerWithdraw(_taskID, _task, _beneficiary, i);
         }
+
+        _beneficiary.send(amount); // It is the user responsibility to accept ETH.
     }
 
     /**
-     * @dev Witdraws contributions of a specific appeal round.
-     * @notice Reimburses contributions if no appeal was raised; otherwise sends the fee stake rewards and reimbursements proportional to the contributions made to the winner of a dispute.
+     * @dev Withdraws contributions of a specific appeal round.
+     * @notice Reimburses contributions if no appeals were raised; otherwise sends the fee stake rewards and reimbursements proportional to the contributions made to the winner of a dispute.
      * @param _taskID The ID of the associated task.
      * @param _task The task state.
      * @param _beneficiary The address that made contributions.
@@ -632,46 +681,44 @@ contract LinguoETH is IArbitrable, IEvidence {
         Task memory _task,
         address payable _beneficiary,
         uint256 _roundNumber
-    ) external onlyValidTask(_taskID, _task) returns (uint256) {
-        return doWithdrawFeesAndRewards(_taskID, _task, _beneficiary, _roundNumber);
+    ) public onlyValidTask(_taskID, _task) returns (uint256) {
+        require(_task.status == Status.Resolved, "The task should be resolved.");
+
+        uint256 amount = registerWithdraw(_taskID, _task, _beneficiary, _roundNumber);
+
+        _beneficiary.send(amount); // It is the user responsibility to accept ETH.
     }
 
     /**
-     * @dev Effectively witdraws contributions of a specific appeal round.
+     * @dev Register the withdraw of fees and rewards for a given party in a given round.
      * @notice This function is internal because no checks are made on the task state. Caller functions MUST do the check before calling this function.
      * @param _taskID The ID of the associated task.
      * @param _task The task state.
      * @param _beneficiary The address that made contributions.
      * @param _roundNumber The round from which to withdraw.
-     * @return The withdrawn amount.
+     * @return The withdrawable amount.
      */
-    function doWithdrawFeesAndRewards(
+    function registerWithdraw(
         uint256 _taskID,
         Task memory _task,
-        address payable _beneficiary,
+        address _beneficiary,
         uint256 _roundNumber
     ) internal returns (uint256) {
-        require(_task.status == Status.Resolved, "The task should be resolved.");
-
         uint256 amount = getWithdrawableAmount(_taskID, _task, _beneficiary, _roundNumber);
+
         Round storage round = roundsByTaskID[_taskID][_roundNumber];
-
-        // Reimburse if funding was unsuccessful of the arbitrator refused to rule.
-        if (
-            _task.ruling == uint256(Party.None) ||
-            !(round.hasPaid[uint256(Party.Translator)] && round.hasPaid[uint256(Party.Challenger)])
-        ) {
-            // Since we are reimbursing all parties, we need to zero out the contributions for both sides to avoid double-spending.
-            round.contributions[_beneficiary][uint256(Party.Translator)] = 0;
-            round.contributions[_beneficiary][uint256(Party.Challenger)] = 0;
-        } else {
-            // Since there is a winner, we need to zero out the contribution to the winning side to avoid double-spending.
-            round.contributions[_beneficiary][_task.ruling] = 0;
-        }
-
-        _beneficiary.send(amount); // It is the user responsibility to accept ETH.
+        round.contributions[_beneficiary][uint256(Party.Translator)] = 0;
+        round.contributions[_beneficiary][uint256(Party.Challenger)] = 0;
 
         return amount;
+    }
+
+    /**
+     * @dev Gets the number of tasks ever created in this contract.
+     * @return The number of tasks.
+     */
+    function getNumberOfTasks() public view returns (uint256) {
+        return taskHashes.length;
     }
 
     /**
@@ -681,7 +728,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @return price The price of the task.
      */
     function getTaskPrice(uint256 _taskID, Task memory _task)
-        external
+        public
         view
         onlyValidTask(_taskID, _task)
         returns (uint256)
@@ -703,7 +750,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @return The translator deposit.
      */
     function getTranslatorDeposit(uint256 _taskID, Task memory _task)
-        external
+        public
         view
         onlyValidTask(_taskID, _task)
         returns (uint256)
@@ -726,16 +773,15 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @return The challenger deposit.
      */
     function getChallengerDeposit(uint256 _taskID, Task memory _task)
-        external
+        public
         view
         onlyValidTask(_taskID, _task)
         returns (uint256)
     {
-        if (now - _task.lastInteraction > reviewTimeout || _task.status != Status.InReview) {
+        if (block.timestamp - _task.lastInteraction > reviewTimeout || _task.status != Status.InReview) {
             return NON_PAYABLE_VALUE;
         } else {
-            uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-            return arbitrationCost.addCap((challengeMultiplier.mulCap(_task.requesterDeposit)) / MULTIPLIER_DIVISOR);
+            return arbitrator.arbitrationCost(arbitratorExtraData);
         }
     }
 
@@ -744,7 +790,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _taskID The ID of the task.
      * @return The number of rounds.
      */
-    function getNumberOfRounds(uint256 _taskID) external view returns (uint256) {
+    function getNumberOfRounds(uint256 _taskID) public view returns (uint256) {
         return roundsByTaskID[_taskID].length;
     }
 
@@ -754,10 +800,10 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _roundNumber The round to be queried.
      * @return paidFees The amount of fees paid by each side.
      * @return hasPaid Whether each side has paid all the required appeal fees or not.
-     * @return feeRewards The total amount to be used as appeal fees and rewards.
+     * @return feeRewards The total amount of appeal fees to be used as crowdfunding rewards.
      */
     function getRoundInfo(uint256 _taskID, uint256 _roundNumber)
-        external
+        public
         view
         returns (
             uint256[3] memory paidFees,
@@ -780,18 +826,9 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _taskID,
         address _contributor,
         uint256 _roundNumber
-    ) external view returns (uint256[3] memory) {
+    ) public view returns (uint256[3] memory) {
         Round storage round = roundsByTaskID[_taskID][_roundNumber];
         return round.contributions[_contributor];
-    }
-
-    /**
-     * @dev Gets the task dispute related to a specific dispute ID.
-     * @param _disputeID The ID of the dispute.
-     * @return The task dispute.
-     */
-    function getTaskDispute(uint256 _disputeID) external view returns (TaskDispute memory) {
-        return taskDisputesByDisputeID[_disputeID];
     }
 
     /**
@@ -805,7 +842,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _taskID,
         Task memory _task,
         address _beneficiary
-    ) external view onlyValidTask(_taskID, _task) returns (uint256 total) {
+    ) public view onlyValidTask(_taskID, _task) returns (uint256 total) {
         if (_task.status != Status.Resolved) {
             return total;
         }
@@ -819,11 +856,12 @@ contract LinguoETH is IArbitrable, IEvidence {
 
     /**
      * @dev Returns the sum of withdrawable wei from a specific appeal round.
+     * @notice This function is internal because no checks are made on the task state. Caller functions MUST do the check before calling this function.
      * @param _taskID The ID of the associated task.
      * @param _task The task state.
      * @param _beneficiary The contributor for which to query.
      * @param _roundNumber The number of the round.
-     * @return The amount of wei available to withdraw regarding the round.
+     * @return The amount of wei available to withdraw from the round.
      */
     function getWithdrawableAmount(
         uint256 _taskID,
