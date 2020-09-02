@@ -35,7 +35,7 @@ contract LinguoETH is IArbitrable, IEvidence {
     /**
      * @dev To be emitted whenever a task state is updated.
      * @param _taskID The ID of the changed task.
-     * @param _task The full task data after creation.
+     * @param _task The full task data after update.
      */
     event TaskStateUpdated(uint256 indexed _taskID, Task _task);
 
@@ -112,7 +112,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 minPrice; // Minimal price for the translation. When the task is created it has minimal price that gradually increases such as it reaches maximal price at deadline.
         uint256 maxPrice; // Maximal price for the translation and also value that must be deposited by the requester.
         uint256 requesterDeposit; // The deposit requester makes when creating the task. Once a task is assigned this deposit will be partially reimbursed and its value replaced by task price.
-        uint256 translatorDeposit; // The sum of the deposits of translator and challenger, if any. This value (minus arbitration fees) will be paid to the party that wins the dispute.
+        uint256 translatorDeposit; // The deposit of the translator, if any. This value (minus arbitration fees) will be paid to the party that wins the dispute.
         uint256 disputeID; // The ID of the dispute created in arbitrator contract.
         uint256 ruling; // Ruling given to the dispute of the task by the arbitrator.
         address payable[3] parties; // Translator and challenger of the task.
@@ -174,9 +174,9 @@ contract LinguoETH is IArbitrable, IEvidence {
     mapping(uint256 => TaskDispute) public taskDisputesByDisputeID;
 
     /**
-     * @notice _arbitrator is trusted and will not re-enter. It also must support and appeal period.
-
+     * @notice _arbitrator is trusted and will not re-enter. It must support an appeal period.
      * @param _arbitrator An instance of an arbitrator as defined in ERC-792.
+     * @param _arbitratorExtraData An instance of an arbitrator as defined in ERC-792.
      * @param _reviewTimeout Time in seconds during which the submitted translation can be challenged.
      * @param _translationMultiplier Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
      * @param _sharedStakeMultiplier  Multiplier for calculating the appeal fee that must be paid by submitter in the case where there isn't a winner and loser (e.g. when the arbitrator ruled "refuse to arbitrate").
@@ -319,7 +319,7 @@ contract LinguoETH is IArbitrable, IEvidence {
 
         // Update requester's deposit since we reimbursed him the difference between maximal and actual price.
         _task.requesterDeposit = price;
-        _task.translatorDeposit += translatorDeposit;
+        _task.translatorDeposit = translatorDeposit;
 
         taskHashes[_taskID] = hashTaskState(_task);
 
@@ -367,7 +367,6 @@ contract LinguoETH is IArbitrable, IEvidence {
         require(block.timestamp - _task.lastInteraction > _task.submissionTimeout, "Deadline has not passed");
 
         // Requester gets his deposit back and also the deposit of the translator, if there was one.
-        // Note that translatorDeposit can't contain challenger's deposit until the task is in InDispute status.
         uint256 amount = _task.requesterDeposit + _task.translatorDeposit;
 
         _task.status = Status.Resolved;
@@ -392,7 +391,6 @@ contract LinguoETH is IArbitrable, IEvidence {
         require(block.timestamp - _task.lastInteraction > reviewTimeout, "Still in review period");
 
         // Translator gets the price of the task and his deposit back.
-        // Note that translatorDeposit can't contain challenger's deposit until the task is in InDispute status.
         uint256 amount = _task.requesterDeposit + _task.translatorDeposit;
 
         _task.status = Status.Resolved;
@@ -660,7 +658,7 @@ contract LinguoETH is IArbitrable, IEvidence {
 
         uint256 amount;
         for (uint256 i = _cursor; i < roundsByTaskID[_taskID].length && (_count == 0 || i < _cursor + _count); i++) {
-            amount += registerWithdraw(_taskID, _task, _beneficiary, i);
+            amount += registerWithdrawal(_taskID, _task, _beneficiary, i);
         }
 
         _beneficiary.send(amount); // It is the user responsibility to accept ETH.
@@ -673,43 +671,41 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @param _task The task state.
      * @param _beneficiary The address that made contributions.
      * @param _roundNumber The round from which to withdraw.
-     * @return The withdrawn amount.
+     * @return amount The withdrawn amount.
      */
     function withdrawFeesAndRewards(
         uint256 _taskID,
         Task memory _task,
         address payable _beneficiary,
         uint256 _roundNumber
-    ) public onlyValidTask(_taskID, _task) returns (uint256) {
+    ) public onlyValidTask(_taskID, _task) returns (uint256 amount) {
         require(_task.status == Status.Resolved, "The task should be resolved.");
 
-        uint256 amount = registerWithdraw(_taskID, _task, _beneficiary, _roundNumber);
+        amount = registerWithdrawal(_taskID, _task, _beneficiary, _roundNumber);
 
         _beneficiary.send(amount); // It is the user responsibility to accept ETH.
     }
 
     /**
-     * @dev Register the withdraw of fees and rewards for a given party in a given round.
+     * @dev Register the withdrawal of fees and rewards for a given party in a given round.
      * @notice This function is internal because no checks are made on the task state. Caller functions MUST do the check before calling this function.
      * @param _taskID The ID of the associated task.
      * @param _task The task state.
      * @param _beneficiary The address that made contributions.
      * @param _roundNumber The round from which to withdraw.
-     * @return The withdrawable amount.
+     * @return amount The withdrawn amount.
      */
-    function registerWithdraw(
+    function registerWithdrawal(
         uint256 _taskID,
         Task memory _task,
         address _beneficiary,
         uint256 _roundNumber
-    ) internal returns (uint256) {
-        uint256 amount = getWithdrawableAmount(_taskID, _task, _beneficiary, _roundNumber);
+    ) internal returns (uint256 amount) {
+        amount = getWithdrawableAmount(_taskID, _task, _beneficiary, _roundNumber);
 
         Round storage round = roundsByTaskID[_taskID][_roundNumber];
         round.contributions[_beneficiary][uint256(Party.Translator)] = 0;
         round.contributions[_beneficiary][uint256(Party.Challenger)] = 0;
-
-        return amount;
     }
 
     /**
