@@ -112,7 +112,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 minPrice; // Minimal price for the translation. When the task is created it has minimal price that gradually increases such as it reaches maximal price at deadline.
         uint256 maxPrice; // Maximal price for the translation and also value that must be deposited by the requester.
         uint256 requesterDeposit; // The deposit requester makes when creating the task. Once a task is assigned this deposit will be partially reimbursed and its value replaced by task price.
-        uint256 translatorDeposit; // The deposit of the translator, if any. This value (minus arbitration fees) will be paid to the party that wins the dispute.
+        uint256 translatorDeposit; // The deposit of the translator, if any. This value will be paid to the party that wins the dispute.
         uint256 disputeID; // The ID of the dispute created in arbitrator contract.
         uint256 ruling; // Ruling given to the dispute of the task by the arbitrator.
         address payable[3] parties; // Translator and challenger of the task.
@@ -176,7 +176,7 @@ contract LinguoETH is IArbitrable, IEvidence {
     /**
      * @notice _arbitrator is trusted and will not re-enter. It must support an appeal period.
      * @param _arbitrator An instance of an arbitrator as defined in ERC-792.
-     * @param _arbitratorExtraData An instance of an arbitrator as defined in ERC-792.
+     * @param _arbitratorExtraData The arbitrator extra data.
      * @param _reviewTimeout Time in seconds during which the submitted translation can be challenged.
      * @param _translationMultiplier Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
      * @param _sharedStakeMultiplier  Multiplier for calculating the appeal fee that must be paid by submitter in the case where there isn't a winner and loser (e.g. when the arbitrator ruled "refuse to arbitrate").
