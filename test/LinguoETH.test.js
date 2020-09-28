@@ -1,7 +1,7 @@
 const {ethers} = require("@nomiclabs/buidler");
 const {solidity} = require("ethereum-waffle");
 const {use, expect} = require("chai");
-const {randomInt, getEmittedEvent, latestTime, increaseTime} = require("../src/test-helpers");
+const {randomInt, getEmittedEvent, latestTime, increaseTime} = require("./helpers");
 const TaskStatus = require("../src/entities/TaskStatus");
 const TaskParty = require("../src/entities/TaskParty");
 const DisputeRuling = require("../src/entities/DisputeRuling");
@@ -10,7 +10,7 @@ use(solidity);
 
 const {BigNumber} = ethers;
 
-describe("Token contract", async () => {
+describe("Linguo contract", async () => {
   const arbitrationFee = BigNumber.from(BigInt(1e18));
   const arbitratorExtraData = "0x85";
   const appealTimeout = 100;
