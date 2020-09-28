@@ -13,7 +13,7 @@ const {BigNumber} = ethers;
 
 describe("Linguo contract", async () => {
   const arbitrationFee = BigNumber.from(BigInt(1e18));
-  const arbitratorExtraData = "0x85";
+  const arbitratorExtraData = "0x83";
   const appealTimeout = 100;
   const reviewTimeout = 2400;
   const translationMultiplier = 1000;
@@ -173,7 +173,7 @@ describe("Linguo contract", async () => {
       const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       // Adds an amount that would be enough to cover difference in price due to time increase
       const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-      await updateTaskState(contract.assignTask(taskID, {value: safeDeposit}));
+      await submitTransaction(contract.assignTask(taskID, {value: safeDeposit}));
 
       const expectedPrice = BigNumber.from(0);
       const actualPrice = await contract.getTaskPrice(taskID);
@@ -206,7 +206,7 @@ describe("Linguo contract", async () => {
       const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       // Adds an amount that would be enough to cover difference in price due to time increase
       const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-      await updateTaskState(contract.assignTask(taskID, {value: safeDeposit}));
+      await submitTransaction(contract.assignTask(taskID, {value: safeDeposit}));
 
       const expectedDeposit = NON_PAYABLE_VALUE;
       const actualDeposit = await contract.getTranslatorDeposit(taskID);
@@ -219,7 +219,7 @@ describe("Linguo contract", async () => {
     it("Should emit a TaskAssigned event when assigning the task to a translator", async () => {
       const expectedPrice = await contract.getTaskPrice(taskID);
       const delta = expectedPrice.div(100);
-      const [_, __, {txPromise, receipt}] = await assignTaskHelper(taskID);
+      const {txPromise, receipt} = await assignTaskHelper(taskID);
 
       await expect(txPromise).to.emit(contract, "TaskAssigned");
 
@@ -233,7 +233,7 @@ describe("Linguo contract", async () => {
       const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       const delta = requiredDeposit.div(100);
 
-      const [_, __, {receipt}] = await assignTaskHelper(taskID);
+      const {receipt} = await assignTaskHelper(taskID);
       const {_price: assignedPrice} = getEmittedEvent("TaskAssigned", receipt).args;
       const actualTask = await contract.getTask(taskID);
 
@@ -246,7 +246,7 @@ describe("Linguo contract", async () => {
     it("Should send the remaining requester deposit back to the requester when assigning the task to a translator", async () => {
       const requesterBalanceBefore = await requester.getBalance();
 
-      const [_, __, {receipt}] = await assignTaskHelper(taskID);
+      const {receipt} = await assignTaskHelper(taskID);
       const {_price: assignedPrice} = getEmittedEvent("TaskAssigned", receipt).args;
       const actualTask = await contract.tasks(taskID);
       const requesterBalanceAfter = await requester.getBalance();
@@ -293,7 +293,7 @@ describe("Linguo contract", async () => {
     });
 
     it("Should emit a TranslationSubmitted event when the translator submits the translated text", async () => {
-      const [_, __, {txPromise}] = await submitTranslationHelper(taskID, translatedText);
+      const {txPromise} = await submitTranslationHelper(taskID, translatedText);
 
       await expect(txPromise)
         .to.emit(contract, "TranslationSubmitted")
@@ -324,7 +324,7 @@ describe("Linguo contract", async () => {
     });
 
     it("Should emit a TaskResolved event when the requester is reimbursed", async () => {
-      const [_, __, {txPromise}] = await reimburseRequesterHelper(taskID);
+      const {txPromise} = await reimburseRequesterHelper(taskID);
 
       await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, ResolveReason.RequesterReimbursed);
     });
@@ -354,7 +354,7 @@ describe("Linguo contract", async () => {
     });
 
     it("Should emit a TaskResolved event when the review timeout has passed without a challenge", async () => {
-      const [_, __, {txPromise}] = await acceptTranslationHelper(taskID);
+      const {txPromise} = await acceptTranslationHelper(taskID);
 
       await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, ResolveReason.TranslationAccepted);
     });
@@ -394,7 +394,7 @@ describe("Linguo contract", async () => {
     });
 
     it("Should emit both a TranslationChallenged, a Dispute and an Evidence events when someone challenges the translation with an evidence", async () => {
-      const [_, __, {txPromise}] = await challengeTranslationHelper(taskID, challengeEvidence);
+      const {txPromise} = await challengeTranslationHelper(taskID, challengeEvidence);
 
       await expect(txPromise)
         .to.emit(contract, "TranslationChallenged")
@@ -408,7 +408,7 @@ describe("Linguo contract", async () => {
     });
 
     it("Should emit only a TranslationChallenged and a Dispute events when someone challenges the translation without providing an evidence", async () => {
-      const [_, __, {txPromise}] = await challengeTranslationHelper(taskID, "");
+      const {txPromise} = await challengeTranslationHelper(taskID, "");
 
       await expect(txPromise).not.to.emit(contract, "Evidence");
 
@@ -471,7 +471,7 @@ describe("Linguo contract", async () => {
       const connectedContract = contract.connect(challenger);
       const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
       await increaseTime(reviewTimeout + 1);
-      await updateTaskState(connectedContract.acceptTranslation(taskID));
+      await submitTransaction(connectedContract.acceptTranslation(taskID));
 
       const txPromise = connectedContract.challengeTranslation(taskID, challengeEvidence, {
         value: requiredDeposit,
@@ -501,7 +501,7 @@ describe("Linguo contract", async () => {
     });
 
     it("Should emit an Evidence event when one of the parties submits an evidence", async () => {
-      const [_, __, {txPromise}] = await updateTaskState(contract.connect(translator).submitEvidence(taskID, evidence));
+      const {txPromise} = await submitTransaction(contract.connect(translator).submitEvidence(taskID, evidence));
       const challengedTask = await contract.getTask(taskID);
 
       await expect(txPromise)
@@ -943,7 +943,7 @@ describe("Linguo contract", async () => {
     });
   });
 
-  describe.only("Calculate withdrawable appeal fees and rewards", () => {
+  describe("Calculate withdrawable appeal fees and rewards", () => {
     beforeEach("Assign task to translator, submit and challenge", async () => {
       await assignTaskHelper(taskID);
       await submitTranslationHelper(taskID, translatedText);
@@ -975,10 +975,10 @@ describe("Linguo contract", async () => {
       );
     });
 
-    it("Should calculate the proper amounts withdrawable by each party when the translation is rejected", async () => {
+    it("Should calculate the proper amount withdrawable by each party when the translation is rejected", async () => {
       const ruling = DisputeRuling.TranslationRejected;
 
-      await fundAppealAndResolveHelper(taskID, ruling);
+      const {appealFees} = await fundAppealAndResolveHelper(taskID, ruling);
 
       const actualAmounts = {
         translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
@@ -1000,14 +1000,14 @@ describe("Linguo contract", async () => {
       );
     });
 
-    it("Should calculate the proper amounts withdrawable by each party when arbitrator refuses to rule", async () => {
+    it("Should calculate the proper amount withdrawable by each party when arbitrator refuses to rule", async () => {
       const ruling = DisputeRuling.RefusedToRule;
 
-      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, ruling);
+      const {appealFees} = await fundAppealAndResolveHelper(taskID, ruling);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
       };
 
       const expectedAmounts = {
@@ -1025,15 +1025,15 @@ describe("Linguo contract", async () => {
       );
     });
 
-    it("Should calculate the proper amounts withdrawable by each party when the appeal reverts the first round decision", async () => {
+    it("Should calculate the proper amount withdrawable by each party when the appeal reverts the first round decision", async () => {
       const firstRuling = DisputeRuling.TranslationApproved;
       const finalRuling = DisputeRuling.TranslationRejected;
 
-      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, firstRuling, finalRuling);
+      const {appealFees} = await fundAppealAndResolveHelper(taskID, firstRuling, finalRuling);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
       };
 
       const expectedAmounts = {
@@ -1053,30 +1053,22 @@ describe("Linguo contract", async () => {
   });
 
   describe("Crowdfunding: calculate withdrawable appeal fees and rewards", () => {
-    let challengedTask;
-
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, translatedText);
-      const [_3] = await challengeTranslationHelper(taskID, challengeEvidence);
-
-      challengedTask = updatedTask;
+      await assignTaskHelper(taskID);
+      await submitTranslationHelper(taskID, translatedText);
+      await challengeTranslationHelper(taskID, challengeEvidence);
     });
 
     it("Should calculate the amount withdrawable by each crowdfunder proportional to their contribution when the translation is approved", async () => {
       const ruling = DisputeRuling.TranslationApproved;
 
-      const [_, resolvedTask, __, appealFees] = await crowdfundAppealFeeAndResolveHelper(
-        taskID,
-        challengedTask,
-        ruling
-      );
+      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, ruling);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await crowdfunder1.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
-        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await crowdfunder2.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder1.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
+        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder2.getAddress()),
       };
 
       const availableFeesAndRewards = appealFees[TaskParty.Translator]
@@ -1111,17 +1103,13 @@ describe("Linguo contract", async () => {
     it("Should calculate the amount withdrawable by each crowdfunder proportioinal to their contribution when the translation is rejected", async () => {
       const ruling = DisputeRuling.TranslationRejected;
 
-      const [_, resolvedTask, __, appealFees] = await crowdfundAppealFeeAndResolveHelper(
-        taskID,
-        challengedTask,
-        ruling
-      );
+      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, ruling);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await crowdfunder1.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
-        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await crowdfunder2.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder1.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
+        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder2.getAddress()),
       };
 
       const availableFeesAndRewards = appealFees[TaskParty.Challenger]
@@ -1156,17 +1144,13 @@ describe("Linguo contract", async () => {
     it("Should calculate the amount withdrawable by each crowdfunder proportional to their contribution when arbitrator refuses to rule", async () => {
       const ruling = DisputeRuling.RefusedToRule;
 
-      const [_, resolvedTask, __, appealFees] = await crowdfundAppealFeeAndResolveHelper(
-        taskID,
-        challengedTask,
-        ruling
-      );
+      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, ruling);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await crowdfunder1.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
-        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await crowdfunder2.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder1.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
+        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder2.getAddress()),
       };
 
       const availableFeesAndRewards = {
@@ -1203,18 +1187,13 @@ describe("Linguo contract", async () => {
       const firstRuling = DisputeRuling.TranslationApproved;
       const finalRuling = DisputeRuling.TranslationRejected;
 
-      const [_, resolvedTask, __, appealFees] = await crowdfundAppealFeeAndResolveHelper(
-        taskID,
-        challengedTask,
-        firstRuling,
-        finalRuling
-      );
+      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, firstRuling, finalRuling);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await crowdfunder1.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
-        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await crowdfunder2.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder1.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
+        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder2.getAddress()),
       };
 
       const availableFeesAndRewards = appealFees[TaskParty.Challenger]
@@ -1251,21 +1230,17 @@ describe("Linguo contract", async () => {
     let challengedTask;
 
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, translatedText);
-      const [_3] = await challengeTranslationHelper(taskID, challengeEvidence);
+      await assignTaskHelper(taskID);
+      await submitTranslationHelper(taskID, translatedText);
+      await challengeTranslationHelper(taskID, challengeEvidence);
 
-      challengedTask = updatedTask;
+      challengedTask = await contract.getTask(taskID);
     });
 
     it("Should withdraw the full withdrawable amount for each party proportional to their contribution when the translation is approved", async () => {
       const ruling = DisputeRuling.TranslationApproved;
 
-      const [_, resolvedTask, __, appealFees] = await crowdfundAppealFeeAndResolveHelper(
-        taskID,
-        challengedTask,
-        ruling
-      );
+      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, ruling);
 
       const availableFeesAndRewards = appealFees[TaskParty.Translator]
         .add(appealFees[TaskParty.Challenger])
@@ -1285,7 +1260,7 @@ describe("Linguo contract", async () => {
         crowdfunder2: balancesBefore.crowdfunder2,
       };
 
-      await batchWithdrawHelper(taskID, resolvedTask, [
+      await batchWithdrawHelper(taskID, [
         await translator.getAddress(),
         await crowdfunder1.getAddress(),
         await challenger.getAddress(),
@@ -1330,8 +1305,8 @@ describe("Linguo contract", async () => {
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
 
-      await fundAppealHelper(taskID, challengedTask, loserContributedFee, loserParty, challenger);
-      await fundAppealHelper(taskID, challengedTask, winnerContributedFee, winnerParty, translator);
+      await fundAppealHelper(taskID, loserContributedFee, loserParty, challenger);
+      await fundAppealHelper(taskID, winnerContributedFee, winnerParty, translator);
 
       await increaseTime(appealTimeout + 1);
       await giveRulingHelper(challengedTask.disputeID, ruling);
@@ -1359,27 +1334,23 @@ describe("Linguo contract", async () => {
 
     it("Should zero out the withdrawable amount for the winner party after the withdraw is made", async () => {
       const ruling = DisputeRuling.TranslationApproved;
-      const [_, resolvedTask] = await fundAppealAndResolveHelper(taskID, ruling);
+      await fundAppealAndResolveHelper(taskID, ruling);
 
-      await batchWithdrawHelper(taskID, resolvedTask, [await translator.getAddress()]);
-      const actualWithdrawableAmount = await contract.getTotalWithdrawableAmount(
-        taskID,
-        resolvedTask,
-        await translator.getAddress()
-      );
+      await batchWithdrawHelper(taskID, [await translator.getAddress()]);
+      const actualWithdrawableAmount = await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress());
 
       expect(actualWithdrawableAmount).to.equal(BigNumber.from(0), "Invalid balance after withdraw");
     });
 
     it("Should zero out the withdrawable amount for the both parties when there is no winner after both withdraw", async () => {
       const ruling = DisputeRuling.RefusedToRule;
-      const [_, resolvedTask] = await fundAppealAndResolveHelper(taskID, ruling);
+      await fundAppealAndResolveHelper(taskID, ruling);
 
-      await batchWithdrawHelper(taskID, resolvedTask, [await translator.getAddress(), await challenger.getAddress()]);
+      await batchWithdrawHelper(taskID, [await translator.getAddress(), await challenger.getAddress()]);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
       };
 
       expect(actualAmounts.translator).to.equal(BigNumber.from(0), "Invalid translator balance after withdraw");
@@ -1389,15 +1360,15 @@ describe("Linguo contract", async () => {
     it("Should not allow the winner party to withdraw funds more than once for a given task", async () => {
       const ruling = DisputeRuling.TranslationApproved;
 
-      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, ruling);
+      const {appealFees} = await fundAppealAndResolveHelper(taskID, ruling);
 
       const balanceBefore = await translator.getBalance();
 
-      await batchWithdrawHelper(taskID, resolvedTask, [await translator.getAddress()]);
+      await batchWithdrawHelper(taskID, [await translator.getAddress()]);
 
       const balanceInBetween = await translator.getBalance();
 
-      await batchWithdrawHelper(taskID, resolvedTask, [await translator.getAddress()]);
+      await batchWithdrawHelper(taskID, [await translator.getAddress()]);
 
       const balanceAfter = await translator.getBalance();
 
@@ -1413,11 +1384,11 @@ describe("Linguo contract", async () => {
     });
   });
 
-  async function updateTaskState(txPromise) {
+  async function submitTransaction(txPromise) {
     const tx = await txPromise;
     const receipt = await tx.wait();
 
-    return [null, null, {txPromise, tx, receipt}];
+    return {txPromise, tx, receipt};
   }
 
   async function assignTaskHelper(taskID, signer = translator) {
@@ -1428,14 +1399,14 @@ describe("Linguo contract", async () => {
     const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
 
     const txPromise = connectedContract.assignTask(taskID, {value: safeDeposit});
-    return updateTaskState(txPromise);
+    return submitTransaction(txPromise);
   }
 
   async function submitTranslationHelper(taskID, translatedText, signer = translator) {
     const connectedContract = contract.connect(signer);
 
     const txPromise = connectedContract.submitTranslation(taskID, translatedText);
-    return updateTaskState(txPromise);
+    return submitTransaction(txPromise);
   }
 
   async function reimburseRequesterHelper(taskID, signer = translator) {
@@ -1443,7 +1414,7 @@ describe("Linguo contract", async () => {
     await increaseTime(submissionTimeout + 3600);
 
     const txPromise = connectedContract.reimburseRequester(taskID);
-    return updateTaskState(txPromise);
+    return submitTransaction(txPromise);
   }
 
   async function acceptTranslationHelper(taskID, signer = requester) {
@@ -1451,7 +1422,7 @@ describe("Linguo contract", async () => {
     await increaseTime(reviewTimeout + 1);
 
     const txPromise = connectedContract.acceptTranslation(taskID);
-    return updateTaskState(txPromise);
+    return submitTransaction(txPromise);
   }
 
   async function challengeTranslationHelper(taskID, evidence, signer = challenger) {
@@ -1459,7 +1430,7 @@ describe("Linguo contract", async () => {
     const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
 
     const txPromise = connectedContract.challengeTranslation(taskID, evidence, {value: requiredDeposit});
-    return updateTaskState(txPromise);
+    return submitTransaction(txPromise);
   }
 
   async function fundAppealHelper(
@@ -1505,8 +1476,8 @@ describe("Linguo contract", async () => {
     if (firstRuling === DisputeRuling.RefusedToRule) {
       const appealFee = arbitrationFee.add(arbitrationFee.mul(sharedMultiplier).div(MULTIPLIER_DIVISOR));
 
-      await fundAppealHelper(taskID, task, appealFee, TaskParty.Translator);
-      await fundAppealHelper(taskID, task, appealFee, TaskParty.Challenger);
+      await fundAppealHelper(taskID, appealFee, TaskParty.Translator);
+      await fundAppealHelper(taskID, appealFee, TaskParty.Challenger);
 
       appealFees[TaskParty.Translator] = appealFee;
       appealFees[TaskParty.Challenger] = appealFee;
@@ -1518,8 +1489,8 @@ describe("Linguo contract", async () => {
       const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
       const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
 
-      await fundAppealHelper(taskID, task, loserAppealFee, loserParty);
-      await fundAppealHelper(taskID, task, winnerAppealFee, winnerParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
+      await fundAppealHelper(taskID, winnerAppealFee, winnerParty);
 
       appealFees[TaskParty.Translator] =
         firstRuling === DisputeRuling.TranslationRejected ? loserAppealFee : winnerAppealFee;
@@ -1536,19 +1507,19 @@ describe("Linguo contract", async () => {
    * Translator fees are split 50/50 paid by translator and crowdfunder1
    * Challenger fees are split 50/50 paid by challenger and crowdfunder2
    */
-  async function crowdfundAppealFeeAndResolveHelper(taskID, task, firstRuling, appealRuling = firstRuling) {
+  async function crowdfundAppealFeeAndResolveHelper(taskID, firstRuling, appealRuling = firstRuling) {
     const appealFees = {};
-
+    const task = await contract.getTask(taskID);
     await giveRulingHelper(task.disputeID, firstRuling);
 
     if (firstRuling === DisputeRuling.RefusedToRule) {
       const appealFee = arbitrationFee.add(arbitrationFee.mul(sharedMultiplier).div(MULTIPLIER_DIVISOR));
       const paidFee = appealFee.div(BigNumber.from(2));
 
-      await fundAppealHelper(taskID, task, paidFee, TaskParty.Translator, translator);
-      await fundAppealHelper(taskID, task, paidFee, TaskParty.Translator, crowdfunder1);
-      await fundAppealHelper(taskID, task, paidFee, TaskParty.Challenger, challenger);
-      await fundAppealHelper(taskID, task, paidFee, TaskParty.Challenger, crowdfunder2);
+      await fundAppealHelper(taskID, paidFee, TaskParty.Translator, translator);
+      await fundAppealHelper(taskID, paidFee, TaskParty.Translator, crowdfunder1);
+      await fundAppealHelper(taskID, paidFee, TaskParty.Challenger, challenger);
+      await fundAppealHelper(taskID, paidFee, TaskParty.Challenger, crowdfunder2);
 
       appealFees[TaskParty.Translator] = appealFee;
       appealFees[TaskParty.Challenger] = appealFee;
@@ -1573,22 +1544,23 @@ describe("Linguo contract", async () => {
       const paidLoserAppealFee = loserAppealFee.div(BigNumber.from(2));
       const paidWinnerAppealFee = winnerAppealFee.div(BigNumber.from(2));
 
-      await fundAppealHelper(taskID, task, paidLoserAppealFee, loserSide.party, loserSide.signer);
-      await fundAppealHelper(taskID, task, paidLoserAppealFee, loserSide.party, loserSide.crowdfunder);
-      await fundAppealHelper(taskID, task, paidWinnerAppealFee, winnerSide.party, winnerSide.signer);
-      await fundAppealHelper(taskID, task, paidWinnerAppealFee, winnerSide.party, winnerSide.crowdfunder);
+      await fundAppealHelper(taskID, paidLoserAppealFee, loserSide.party, loserSide.signer);
+      await fundAppealHelper(taskID, paidLoserAppealFee, loserSide.party, loserSide.crowdfunder);
+      await fundAppealHelper(taskID, paidWinnerAppealFee, winnerSide.party, winnerSide.signer);
+      await fundAppealHelper(taskID, paidWinnerAppealFee, winnerSide.party, winnerSide.crowdfunder);
 
       appealFees[loserSide.party] = loserAppealFee;
       appealFees[winnerSide.party] = winnerAppealFee;
     }
 
     const appealDisputeID = await arbitrator.getAppealDisputeID(task.disputeID);
-    await giveFinalRulingHelper(appealDisputeID, appealRuling);
+
+    return {...(await giveFinalRulingHelper(appealDisputeID, appealRuling)), appealFees};
   }
 
-  async function batchWithdrawHelper(taskID, task, addresses = []) {
+  async function batchWithdrawHelper(taskID, addresses = []) {
     const txs = await Promise.all(
-      addresses.map((address) => contract.batchWithdrawFeesAndRewards(taskID, task, address, 0, 0))
+      addresses.map((address) => contract.batchWithdrawFeesAndRewards(taskID, address, 0, 0))
     );
     return Promise.all(txs.map((tx) => tx.wait()));
   }

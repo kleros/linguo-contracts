@@ -511,7 +511,7 @@ contract LinguoETH is IArbitrable, IEvidence {
      * @return remainder The amount of ETH left from the contribution.
      */
     function calculateContribution(uint256 _available, uint256 _requiredAmount)
-        internal
+        private
         pure
         returns (uint256 taken, uint256 remainder)
     {
@@ -650,7 +650,7 @@ contract LinguoETH is IArbitrable, IEvidence {
 
     /**
      * @dev Register the withdrawal of fees and rewards for a given party in a given round.
-     * @notice This function is internal because no checks are made on the task state. Caller functions MUST do the check before calling this function.
+     * @notice This function is private because no checks are made on the task state. Caller functions MUST do the check before calling this function.
      * @param _taskID The ID of the associated task.
      * @param _beneficiary The address that made contributions.
      * @param _roundNumber The round from which to withdraw.
@@ -660,7 +660,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _taskID,
         address _beneficiary,
         uint256 _roundNumber
-    ) internal returns (uint256 amount) {
+    ) private returns (uint256 amount) {
         amount = getWithdrawableAmount(_taskID, _beneficiary, _roundNumber);
 
         Round storage round = roundsByTaskID[_taskID][_roundNumber];
@@ -800,7 +800,7 @@ contract LinguoETH is IArbitrable, IEvidence {
 
     /**
      * @dev Returns the sum of withdrawable wei from a specific appeal round.
-     * @notice This function is internal because no checks are made on the task state. Caller functions MUST do the check before calling this function.
+     * @notice This function is private because no checks are made on the task state. Caller functions MUST do the check before calling this function.
      * @param _taskID The ID of the associated task.
      * @param _beneficiary The contributor for which to query.
      * @param _roundNumber The number of the round.
@@ -810,7 +810,7 @@ contract LinguoETH is IArbitrable, IEvidence {
         uint256 _taskID,
         address _beneficiary,
         uint256 _roundNumber
-    ) internal view returns (uint256) {
+    ) private view returns (uint256) {
         Task storage task = tasks[_taskID];
         TaskDispute storage taskDispute = taskDisputesByDisputeID[task.disputeID];
         Round storage round = roundsByTaskID[_taskID][_roundNumber];
