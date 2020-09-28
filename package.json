@@ -6,8 +6,8 @@
   "author": "Kleros",
   "license": "MIT",
   "scripts": {
-    "build": "run-s -s build:4 build:6",
-    "build:6": "buidler compile",
+    "build": "run-s -s build:*",
+    "build:7": "buidler compile",
     "build:4": "buidler compile --config buidler.config.4.js",
     "clean": "buidler clean",
     "lint": "run-p -s lint:*",
@@ -47,7 +47,7 @@
     "web3": "^1.2.11"
   },
   "dependencies": {
-    "@kleros/erc-792": "^4.0.1",
-    "@kleros/ethereum-libraries": "^2.0.1"
+    "@kleros/erc-792": "^7.0.0",
+    "@kleros/ethereum-libraries": "^7.0.0"
   }
 }

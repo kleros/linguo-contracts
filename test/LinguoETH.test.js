@@ -5,6 +5,7 @@ const {randomInt, getEmittedEvent, latestTime, increaseTime} = require("./helper
 const TaskStatus = require("../src/entities/TaskStatus");
 const TaskParty = require("../src/entities/TaskParty");
 const DisputeRuling = require("../src/entities/DisputeRuling");
+const ResolveReason = require("../src/entities/ResolveReason");
 
 use(solidity);
 
@@ -44,7 +45,6 @@ describe("Linguo contract", async () => {
   let taskTx;
   let taskTxReceipt;
   let taskID;
-  let task;
 
   beforeEach("Setup contracts", async () => {
     [governor, requester, translator, challenger, other, crowdfunder1, crowdfunder2] = await ethers.getSigners();
@@ -84,7 +84,7 @@ describe("Linguo contract", async () => {
         value: taskMaxPrice,
       });
     taskTxReceipt = await taskTx.wait();
-    [taskID, task] = getEmittedEvent("TaskStateUpdated", taskTxReceipt).args;
+    taskID = getEmittedEvent("TaskCreated", taskTxReceipt).args._taskID;
 
     secondsPassed = randomInt(submissionTimeout - 5);
     await increaseTime(secondsPassed);
@@ -125,53 +125,6 @@ describe("Linguo contract", async () => {
       await expect(txPromise).to.emit(contract, "MetaEvidence").withArgs(expectedTaskId, metaEvidence);
     });
 
-    it("Should emit a TaskStateUpdated event with the correct params for the newly created task", async () => {
-      currentTime = await latestTime();
-      const deadline = currentTime + submissionTimeout;
-      const metaEvidence = "TestMetaEvidence";
-      const requesterAddress = await requester.getAddress();
-
-      const tx = await contract.connect(requester).createTask(deadline, taskMinPrice, metaEvidence, {
-        value: taskMaxPrice,
-      });
-
-      const receipt = await tx.wait();
-
-      const [newTaskId, newTask] = getEmittedEvent("TaskStateUpdated", receipt).args;
-
-      expect(newTaskId).to.equal(1, "Invalid task ID");
-      expect(newTask.status).to.equal(TaskStatus.Created, "Invalid status");
-      expect(newTask.requester).to.equal(requesterAddress, "Invalid requester address");
-      expect(Number(newTask.submissionTimeout)).to.be.closeTo(submissionTimeout, 10, "Invalid submission timeout");
-      expect(Number(newTask.lastInteraction)).to.be.closeTo(currentTime, 10, "Invalid last interaction");
-      expect(newTask.minPrice).to.equal(taskMinPrice, "Invalid min price");
-      expect(newTask.maxPrice).to.equal(taskMaxPrice, "Wron max price");
-      expect(newTask.requesterDeposit).to.equal(taskMaxPrice, "Invalid requester deposit");
-      expect(newTask.translatorDeposit).to.equal(0, "Invalid translator deposit");
-      expect(newTask.disputeID).to.equal(0, "Invalid dispute ID");
-      expect(newTask.ruling).to.equal(0, "Invalid ruling");
-      expect(newTask.parties).to.deep.equal(Array(3).fill(ethers.constants.AddressZero), "Invalid parties");
-    });
-
-    it("Should store the proper hashed task state of the newly created task", async () => {
-      currentTime = await latestTime();
-      const deadline = currentTime + submissionTimeout;
-      const metaEvidence = "TestMetaEvidence";
-
-      const tx = await contract.connect(requester).createTask(deadline, taskMinPrice, metaEvidence, {
-        value: taskMaxPrice,
-      });
-
-      const receipt = await tx.wait();
-
-      const [newTaskId, newTask] = getEmittedEvent("TaskStateUpdated", receipt).args;
-
-      const actualHash = await contract.taskHashes(newTaskId);
-      const expectedHash = await contract.hashTaskState(newTask);
-
-      expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
-    });
-
     it("Should revert when maxPrice is lower than minPrice", async () => {
       currentTime = await latestTime();
       const deadline = currentTime + submissionTimeout;
@@ -202,7 +155,7 @@ describe("Linguo contract", async () => {
       const expectedPrice = taskMinPrice.add(taskMaxPrice.sub(taskMinPrice).mul(secondsPassed).div(submissionTimeout));
       const delta = expectedPrice.div(100);
 
-      const actualPrice = await contract.getTaskPrice(taskID, task);
+      const actualPrice = await contract.getTaskPrice(taskID);
 
       expect(actualPrice.sub(expectedPrice).abs()).to.be.lt(delta, "Invalid task price");
     });
@@ -211,40 +164,31 @@ describe("Linguo contract", async () => {
       await increaseTime(submissionTimeout + 1);
       const expectedPrice = BigNumber.from(0);
 
-      const actualPrice = await contract.getTaskPrice(taskID, task);
+      const actualPrice = await contract.getTaskPrice(taskID);
 
       expect(actualPrice).to.equal(expectedPrice, "Invalid task price");
     });
 
-    it("Should return the correct task price when status is not `created`", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID, task);
+    it("Should return the correct task price when status is not `Created`", async () => {
+      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       // Adds an amount that would be enough to cover difference in price due to time increase
       const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-      const [_, updatedTask] = await updateTaskState(contract.assignTask(taskID, task, {value: safeDeposit}));
+      await updateTaskState(contract.assignTask(taskID, {value: safeDeposit}));
 
       const expectedPrice = BigNumber.from(0);
-      const actualPrice = await contract.getTaskPrice(taskID, updatedTask);
+      const actualPrice = await contract.getTaskPrice(taskID);
 
       expect(actualPrice).to.equal(expectedPrice, "Invalid task price");
-    });
-
-    it("Should revert when task data does not match the stored task hash", async () => {
-      const corruptedTask = {
-        ...task,
-        maxPrice: BigNumber.from(0),
-      };
-
-      await expect(contract.getTaskPrice(taskID, corruptedTask)).to.be.revertedWith("Task does not match stored hash");
     });
   });
 
   describe("Translator deposit", () => {
     it("Should return the correct deposit value before submission timeout", async () => {
-      const price = await contract.getTaskPrice(taskID, task);
+      const price = await contract.getTaskPrice(taskID);
       const expectedDeposit = arbitrationFee.add(price.mul(translationMultiplier).div(MULTIPLIER_DIVISOR));
       const delta = expectedDeposit.div(100);
 
-      const actualDeposit = await contract.getTranslatorDeposit(taskID, task);
+      const actualDeposit = await contract.getTranslatorDeposit(taskID);
 
       expect(actualDeposit.sub(expectedDeposit).abs()).to.be.lt(delta, "Invalid translator deposit");
     });
@@ -253,40 +197,29 @@ describe("Linguo contract", async () => {
       await increaseTime(submissionTimeout + 1);
       const expectedDeposit = NON_PAYABLE_VALUE;
 
-      const actualDeposit = await contract.getTranslatorDeposit(taskID, task);
+      const actualDeposit = await contract.getTranslatorDeposit(taskID);
 
       expect(actualDeposit).to.equal(expectedDeposit, "Invalid translator deposit");
     });
 
     it("Should return the correct deposit value when status is not `created`", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID, task);
+      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       // Adds an amount that would be enough to cover difference in price due to time increase
       const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-      const [_, updatedTask] = await updateTaskState(contract.assignTask(taskID, task, {value: safeDeposit}));
+      await updateTaskState(contract.assignTask(taskID, {value: safeDeposit}));
 
       const expectedDeposit = NON_PAYABLE_VALUE;
-      const actualDeposit = await contract.getTranslatorDeposit(taskID, updatedTask);
+      const actualDeposit = await contract.getTranslatorDeposit(taskID);
 
       expect(actualDeposit).to.equal(expectedDeposit, "Invalid translator deposit");
-    });
-
-    it("Should revert when task data does not match the stored task hash", async () => {
-      const corruptedTask = {
-        ...task,
-        maxPrice: BigNumber.from(0),
-      };
-
-      await expect(contract.getTranslatorDeposit(taskID, corruptedTask)).to.be.revertedWith(
-        "Task does not match stored hash"
-      );
     });
   });
 
   describe("Assign task", () => {
     it("Should emit a TaskAssigned event when assigning the task to a translator", async () => {
-      const expectedPrice = await contract.getTaskPrice(taskID, task);
+      const expectedPrice = await contract.getTaskPrice(taskID);
       const delta = expectedPrice.div(100);
-      const [_, __, {txPromise, receipt}] = await assignTaskHelper(taskID, task);
+      const [_, __, {txPromise, receipt}] = await assignTaskHelper(taskID);
 
       await expect(txPromise).to.emit(contract, "TaskAssigned");
 
@@ -296,35 +229,26 @@ describe("Linguo contract", async () => {
       expect(actualPrice.sub(expectedPrice).abs()).to.be.lt(delta, "Invalid task assigned price");
     });
 
-    it("Should emit a TaskStateUpdated event when assigning the task to a translator", async () => {
-      const [_, __, {txPromise}] = await assignTaskHelper(taskID, task);
-
-      await expect(txPromise).to.emit(contract, "TaskStateUpdated");
-    });
-
     it("Should update the task state when assigning the task to a translator", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID, task);
+      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       const delta = requiredDeposit.div(100);
 
-      const [actualTaskID, actualTask, {receipt}] = await assignTaskHelper(taskID, task);
+      const [_, __, {receipt}] = await assignTaskHelper(taskID);
       const {_price: assignedPrice} = getEmittedEvent("TaskAssigned", receipt).args;
-      const actualHash = await contract.taskHashes(actualTaskID);
-      const expectedHash = await contract.hashTaskState(actualTask);
+      const actualTask = await contract.getTask(taskID);
 
-      expect(actualTaskID).to.equal(taskID, "Assigned wrong task");
       expect(actualTask.status).to.equal(TaskStatus.Assigned, "Invalid status");
       expect(actualTask.parties[TaskParty.Translator]).to.equal(await translator.getAddress(), "Invalid translator");
       expect(actualTask.requesterDeposit).to.equal(assignedPrice, "Invalid price");
       expect(actualTask.translatorDeposit.sub(requiredDeposit).abs()).to.be.lt(delta, "Invalid translatorDeposit");
-      expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
     });
 
     it("Should send the remaining requester deposit back to the requester when assigning the task to a translator", async () => {
       const requesterBalanceBefore = await requester.getBalance();
 
-      const [_, actualTask, {receipt}] = await assignTaskHelper(taskID, task);
+      const [_, __, {receipt}] = await assignTaskHelper(taskID);
       const {_price: assignedPrice} = getEmittedEvent("TaskAssigned", receipt).args;
-
+      const actualTask = await contract.tasks(taskID);
       const requesterBalanceAfter = await requester.getBalance();
 
       const remainingDeposit = actualTask.maxPrice.sub(assignedPrice);
@@ -335,80 +259,51 @@ describe("Linguo contract", async () => {
     });
 
     it("Should revert when sending less than the required translator deposit", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID, task);
+      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       const attemptedDeposit = requiredDeposit.sub(1000);
 
-      await expect(contract.assignTask(taskID, task, {value: attemptedDeposit})).to.be.revertedWith(
-        "Deposit value too low"
-      );
+      await expect(contract.assignTask(taskID, {value: attemptedDeposit})).to.be.revertedWith("Deposit value too low");
     });
 
     it("Should revert when the deadline has already passed", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID, task);
+      // Adds an amount that would be enough to cover difference in price due to time increase
+      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       // Adds an amount that would be enough to cover difference in price due to time increase
       const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
 
       await increaseTime(submissionTimeout + 3600);
 
-      await expect(contract.assignTask(taskID, task, {value: safeDeposit})).to.be.revertedWith("Deadline has passed");
+      await expect(contract.assignTask(taskID, {value: safeDeposit})).to.be.revertedWith("Deadline has passed");
     });
 
     it("Should revert when task is already assigned", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID, task);
+      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
       // Adds an amount that would be enough to cover difference in price due to time increase
       const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
 
-      const [_, assignedTask] = await assignTaskHelper(taskID, task);
+      await assignTaskHelper(taskID);
 
-      await expect(contract.assignTask(taskID, assignedTask, {value: safeDeposit})).to.be.revertedWith(
-        "Invalid task status"
-      );
-    });
-
-    it("Should revert when task data does not match the stored task hash", async () => {
-      const [_, assignedTask] = await assignTaskHelper(taskID, task);
-      const corruptedTask = {
-        ...assignedTask,
-        submissionTimeout: submissionTimeout * 2,
-      };
-
-      await expect(contract.assignTask(taskID, corruptedTask)).to.be.revertedWith("Task does not match stored hash");
+      await expect(contract.assignTask(taskID, {value: safeDeposit})).to.be.revertedWith("Invalid task status");
     });
   });
 
   describe("Submit translation", () => {
-    let assignedTask;
-
     beforeEach("Assign task to translator", async () => {
-      const [_, updatedTask] = await assignTaskHelper(taskID, task);
-
-      assignedTask = updatedTask;
+      await assignTaskHelper(taskID);
     });
 
     it("Should emit a TranslationSubmitted event when the translator submits the translated text", async () => {
-      const [_, __, {txPromise}] = await submitTranslationHelper(taskID, assignedTask, translatedText);
+      const [_, __, {txPromise}] = await submitTranslationHelper(taskID, translatedText);
 
       await expect(txPromise)
         .to.emit(contract, "TranslationSubmitted")
         .withArgs(taskID, await translator.getAddress(), translatedText);
     });
 
-    it("Should update the task state when the translator submits the translated text", async () => {
-      const [actualTaskID, actualTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-      const currentTime = await latestTime();
-
-      const actualHash = await contract.taskHashes(actualTaskID);
-      const expectedHash = await contract.hashTaskState(actualTask);
-
-      expect(actualTask.status).to.equal(TaskStatus.InReview, "Invalid status");
-      expect(actualTask.lastInteraction).to.equal(currentTime, "Invalid lastInteraction");
-      expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
-    });
-
     it("Should not allow anyone else other than the translator to submit the translated text", async () => {
       const connectedContract = contract.connect(other);
 
-      expect(connectedContract.submitTranslation(taskID, assignedTask, translatedText)).to.be.revertedWith(
+      expect(connectedContract.submitTranslation(taskID, translatedText)).to.be.revertedWith(
         "Only translator is allowed"
       );
     });
@@ -417,20 +312,7 @@ describe("Linguo contract", async () => {
       const connectedContract = contract.connect(translator);
       await increaseTime(submissionTimeout + 3600);
 
-      expect(connectedContract.submitTranslation(taskID, assignedTask, translatedText)).to.be.revertedWith(
-        "Deadline has passed"
-      );
-    });
-
-    it("Should revert when task data does not match the stored task hash", async () => {
-      const corruptedTask = {
-        ...assignedTask,
-        submissionTimeout: submissionTimeout * 2,
-      };
-
-      await expect(contract.submitTranslation(taskID, corruptedTask, translatedText)).to.be.revertedWith(
-        "Task does not match stored hash"
-      );
+      expect(connectedContract.submitTranslation(taskID, translatedText)).to.be.revertedWith("Deadline has passed");
     });
   });
 
@@ -438,93 +320,53 @@ describe("Linguo contract", async () => {
     it("Should reimburse the requester if no translator picked the task before the deadline has passed", async () => {
       await increaseTime(submissionTimeout + 3600);
 
-      await expect(() => contract.reimburseRequester(taskID, task)).to.changeBalance(requester, taskMaxPrice);
+      await expect(() => contract.reimburseRequester(taskID)).to.changeBalance(requester, taskMaxPrice);
     });
 
     it("Should emit a TaskResolved event when the requester is reimbursed", async () => {
-      const [_, __, {txPromise}] = await reimburseRequesterHelper(taskID, task);
+      const [_, __, {txPromise}] = await reimburseRequesterHelper(taskID);
 
-      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, "requester-reimbursed");
-    });
-
-    it("Should update the task state when the requester is reimbursed", async () => {
-      const [_, updatedTask] = await reimburseRequesterHelper(taskID, task);
-
-      const actualHash = await contract.taskHashes(taskID);
-      const expectedHash = await contract.hashTaskState(updatedTask);
-
-      expect(updatedTask.status).to.equal(TaskStatus.Resolved, "Invalid task status");
-      expect(updatedTask.requesterDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
-      expect(updatedTask.translatorDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
-      expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
+      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, ResolveReason.RequesterReimbursed);
     });
 
     it("Should reimburse the requester if the translator did not submit the task before the deadline has passed", async () => {
-      const [_, assignedTask] = await assignTaskHelper(taskID, task);
+      await assignTaskHelper(taskID);
       await increaseTime(submissionTimeout + 3600);
 
+      const assignedTask = await contract.getTask(taskID);
       // The requester takes the translator deposit as well.
       const expectedBalanceChange = assignedTask.requesterDeposit.add(assignedTask.translatorDeposit);
 
-      await expect(() => contract.reimburseRequester(taskID, assignedTask)).to.changeBalance(
-        requester,
-        expectedBalanceChange
-      );
+      await expect(() => contract.reimburseRequester(taskID)).to.changeBalance(requester, expectedBalanceChange);
     });
 
     it("Should not be possible to reimburse if submission timeout has not passed", async () => {
       await increaseTime(100);
 
-      await expect(contract.reimburseRequester(taskID, task)).to.be.revertedWith("Deadline has not passed");
-    });
-
-    it("Should revert when task data does not match the stored task hash", async () => {
-      await increaseTime(submissionTimeout + 3600);
-      const corruptedTask = {
-        ...task,
-        requesterDeposit: taskMaxPrice.mul(BigNumber.from(2)),
-      };
-
-      await expect(contract.reimburseRequester(taskID, corruptedTask)).to.be.revertedWith(
-        "Task does not match stored hash"
-      );
+      await expect(contract.reimburseRequester(taskID)).to.be.revertedWith("Deadline has not passed");
     });
   });
 
   describe("Accept translation", () => {
-    let taskInReview;
-
     beforeEach("Assign task to translator and submit translation", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, challengedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-
-      taskInReview = challengedTask;
+      await assignTaskHelper(taskID);
+      await submitTranslationHelper(taskID, translatedText);
     });
 
     it("Should emit a TaskResolved event when the review timeout has passed without a challenge", async () => {
-      const [_, __, {txPromise}] = await acceptTranslationHelper(taskID, taskInReview);
+      const [_, __, {txPromise}] = await acceptTranslationHelper(taskID);
 
-      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, "translation-accepted");
-    });
-
-    it("Should update the task state when translation is accepted", async () => {
-      const [_, resolvedTask] = await acceptTranslationHelper(taskID, taskInReview);
-      const actualHash = await contract.taskHashes(taskID);
-      const expectedHash = await contract.hashTaskState(resolvedTask);
-
-      expect(resolvedTask.status).to.equal(TaskStatus.Resolved, "Invalid task status");
-      expect(resolvedTask.requesterDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
-      expect(resolvedTask.translatorDeposit).to.equal(BigNumber.from(0), "Invalid requesterDeposit");
-      expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
+      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, ResolveReason.TranslationAccepted);
     });
 
     it("Should pay the translator when the translation is accepted", async () => {
       const translatorBalanceBefore = await translator.getBalance();
+      const taskInReview = await contract.getTask(taskID);
       const taskPrice = taskInReview.requesterDeposit;
       const translatorDeposit = taskInReview.translatorDeposit;
       const balanceChange = taskPrice.add(translatorDeposit);
 
-      await acceptTranslationHelper(taskID, taskInReview);
+      await acceptTranslationHelper(taskID);
 
       const translatorBalanceAfter = await translator.getBalance();
 
@@ -534,40 +376,25 @@ describe("Linguo contract", async () => {
     it("Should not accept the translation when review timeout has not passed yet", async () => {
       await increaseTime(reviewTimeout - 1000);
 
-      await expect(contract.acceptTranslation(taskID, taskInReview)).to.be.revertedWith("Still in review period");
+      await expect(contract.acceptTranslation(taskID)).to.be.revertedWith("Still in review period");
     });
 
     it("Should not accept the translation when the translation was challenged", async () => {
-      const [_, challengedTask] = await challengeTranslationHelper(taskID, taskInReview, challengeEvidence);
+      await challengeTranslationHelper(taskID, challengeEvidence);
       await increaseTime(reviewTimeout + 20);
 
-      await expect(contract.acceptTranslation(taskID, challengedTask)).to.be.revertedWith("Invalid task status");
-    });
-
-    it("Should revert when task data does not match the stored task hash", async () => {
-      const corruptedTask = {
-        ...taskInReview,
-        translatorDeposit: taskMaxPrice.mul(BigNumber.from(2)),
-      };
-
-      await expect(contract.acceptTranslation(taskID, corruptedTask)).to.be.revertedWith(
-        "Task does not match stored hash"
-      );
+      await expect(contract.acceptTranslation(taskID)).to.be.revertedWith("Invalid task status");
     });
   });
 
   describe("Challenge translation", () => {
-    let sumbittedTask;
-
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, updatedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-
-      sumbittedTask = updatedTask;
+      await assignTaskHelper(taskID);
+      await submitTranslationHelper(taskID, translatedText);
     });
 
     it("Should emit both a TranslationChallenged, a Dispute and an Evidence events when someone challenges the translation with an evidence", async () => {
-      const [_, __, {txPromise}] = await challengeTranslationHelper(taskID, sumbittedTask, challengeEvidence);
+      const [_, __, {txPromise}] = await challengeTranslationHelper(taskID, challengeEvidence);
 
       await expect(txPromise)
         .to.emit(contract, "TranslationChallenged")
@@ -581,7 +408,7 @@ describe("Linguo contract", async () => {
     });
 
     it("Should emit only a TranslationChallenged and a Dispute events when someone challenges the translation without providing an evidence", async () => {
-      const [_, __, {txPromise}] = await challengeTranslationHelper(taskID, sumbittedTask, "");
+      const [_, __, {txPromise}] = await challengeTranslationHelper(taskID, "");
 
       await expect(txPromise).not.to.emit(contract, "Evidence");
 
@@ -593,25 +420,8 @@ describe("Linguo contract", async () => {
         .withArgs(arbitrator.address, BigNumber.from(0), taskID, taskID);
     });
 
-    it("Should update the task state when someone challenges the translation", async () => {
-      const requiredDeposit = await contract.getChallengerDeposit(taskID, sumbittedTask);
-      const arbitrationCost = await arbitrator.arbitrationCost(arbitratorExtraData);
-      const previousTranslatorDeposit = sumbittedTask.translatorDeposit;
-      const expectedFinalTranslatorDeposit = previousTranslatorDeposit.add(requiredDeposit).sub(arbitrationCost);
-
-      const [actualTaskID, actualTask] = await challengeTranslationHelper(taskID, sumbittedTask, translatedText);
-      const actualHash = await contract.taskHashes(actualTaskID);
-      const expectedHash = await contract.hashTaskState(actualTask);
-
-      expect(actualTaskID).to.equal(taskID, "Assigned wrong task");
-      expect(actualTask.status).to.equal(TaskStatus.InDispute, "Invalid status");
-      expect(actualTask.parties[TaskParty.Challenger]).to.equal(await challenger.getAddress(), "Invalid challenger");
-      expect(actualTask.translatorDeposit).to.equal(expectedFinalTranslatorDeposit, "Invalid translatorDeposit");
-      expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
-    });
-
     it("Should update the rounds state of the translation", async () => {
-      await challengeTranslationHelper(taskID, sumbittedTask, translatedText);
+      await challengeTranslationHelper(taskID, challengeEvidence);
 
       const actualNumberOfRounds = await contract.getNumberOfRounds(taskID);
       const roundInfo = await contract.getRoundInfo(taskID, 0);
@@ -625,8 +435,8 @@ describe("Linguo contract", async () => {
     });
 
     it("Should update the task dispute state of the translation", async () => {
-      const [_, challengedTask] = await challengeTranslationHelper(taskID, sumbittedTask, translatedText);
-
+      await challengeTranslationHelper(taskID, challengeEvidence);
+      const challengedTask = await contract.getTask(taskID);
       const taskDispute = await contract.taskDisputesByDisputeID(challengedTask.disputeID);
 
       expect(taskDispute.exists).to.equal(true);
@@ -637,7 +447,7 @@ describe("Linguo contract", async () => {
     it("Should create a dispute on the arbitrator when someone challenges a translation", async () => {
       const expectedNoOfChoices = BigNumber.from(2);
 
-      await challengeTranslationHelper(taskID, sumbittedTask, translatedText);
+      await challengeTranslationHelper(taskID, challengeEvidence);
 
       const dispute = await arbitrator.disputes(0);
       expect(dispute.arbitrated).to.equal(contract.address, "Arbitrable not set up properly");
@@ -646,11 +456,11 @@ describe("Linguo contract", async () => {
 
     it("Should not be allowed to challenge if the review period has already passed", async () => {
       const connectedContract = contract.connect(challenger);
-      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID, sumbittedTask);
+      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
 
       await increaseTime(reviewTimeout + 1);
 
-      const txPromise = connectedContract.challengeTranslation(taskID, sumbittedTask, challengeEvidence, {
+      const txPromise = connectedContract.challengeTranslation(taskID, challengeEvidence, {
         value: requiredDeposit,
       });
 
@@ -659,11 +469,11 @@ describe("Linguo contract", async () => {
 
     it("Should not be allowed to challenge if the task was already resolved", async () => {
       const connectedContract = contract.connect(challenger);
-      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID, sumbittedTask);
+      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
       await increaseTime(reviewTimeout + 1);
-      const [_, acceptedTask] = await updateTaskState(connectedContract.acceptTranslation(taskID, sumbittedTask));
+      await updateTaskState(connectedContract.acceptTranslation(taskID));
 
-      const txPromise = connectedContract.challengeTranslation(taskID, acceptedTask, challengeEvidence, {
+      const txPromise = connectedContract.challengeTranslation(taskID, challengeEvidence, {
         value: requiredDeposit,
       });
 
@@ -672,39 +482,27 @@ describe("Linguo contract", async () => {
 
     it("Should not be allowed to challenge if challenger deposit value is too low", async () => {
       const connectedContract = contract.connect(challenger);
-      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID, sumbittedTask);
+      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
       const actualDeposit = requiredDeposit.sub(BigNumber.from(1));
 
-      const txPromise = connectedContract.challengeTranslation(taskID, sumbittedTask, challengeEvidence, {
+      const txPromise = connectedContract.challengeTranslation(taskID, challengeEvidence, {
         value: actualDeposit,
       });
 
       await expect(txPromise).to.be.revertedWith("Deposit value too low");
     });
-
-    it("Should revert when task data does not match the stored task hash", async () => {
-      const corruptedTask = {
-        ...sumbittedTask,
-        translatorDeposit: sumbittedTask.translatorDeposit.mul(BigNumber.from(2)),
-      };
-
-      await expect(contract.assignTask(taskID, corruptedTask)).to.be.revertedWith("Task does not match stored hash");
-    });
   });
 
   describe("Submit evidence", () => {
-    let challengedTask;
-
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-      const [_3, updatedTask] = await challengeTranslationHelper(taskID, submittedTask, challengeEvidence);
-
-      challengedTask = updatedTask;
+      await assignTaskHelper(taskID);
+      await submitTranslationHelper(taskID, translatedText);
+      await challengeTranslationHelper(taskID, challengeEvidence);
     });
 
     it("Should emit an Evidence event when one of the parties submits an evidence", async () => {
-      const txPromise = contract.connect(translator).submitEvidence(taskID, challengedTask, evidence);
+      const [_, __, {txPromise}] = await updateTaskState(contract.connect(translator).submitEvidence(taskID, evidence));
+      const challengedTask = await contract.getTask(taskID);
 
       await expect(txPromise)
         .to.emit(contract, "Evidence")
@@ -712,7 +510,7 @@ describe("Linguo contract", async () => {
     });
 
     it("Should allow a 3rd-party to submit an Evidence in its behalf", async () => {
-      const txPromise = contract.connect(other).submitEvidence(taskID, challengedTask, evidence);
+      const txPromise = contract.connect(other).submitEvidence(taskID, evidence);
 
       await expect(txPromise)
         .to.emit(contract, "Evidence")
@@ -720,20 +518,21 @@ describe("Linguo contract", async () => {
     });
 
     it("Should not allow to submit an evidence if the task dispute already has a ruling", async () => {
+      const task = await contract.getTask(taskID);
       const ruling = DisputeRuling.TranslationApproved;
       await giveFinalRulingHelper(task.disputeID, ruling);
 
-      const txPromise = contract.submitEvidence(taskID, challengedTask, evidence);
+      const txPromise = contract.submitEvidence(taskID, evidence);
 
       await expect(txPromise).to.be.revertedWith("Dispute already settled");
     });
 
     it("Should not allow to submit an evidence if the task is already resolved", async () => {
+      const task = await contract.getTask(taskID);
       const ruling = DisputeRuling.TranslationApproved;
       await giveFinalRulingHelper(task.disputeID, ruling);
-      const [_, actualTask] = await executeRulingHelper(taskID, challengedTask);
 
-      const txPromise = contract.submitEvidence(taskID, actualTask, evidence);
+      const txPromise = contract.submitEvidence(taskID, evidence);
 
       await expect(txPromise).to.be.revertedWith("Dispute already settled");
     });
@@ -743,14 +542,14 @@ describe("Linguo contract", async () => {
     let challengedTask;
 
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-      const [_3, updatedTask] = await challengeTranslationHelper(taskID, submittedTask, challengeEvidence);
-
-      challengedTask = updatedTask;
+      await assignTaskHelper(taskID);
+      await submitTranslationHelper(taskID, translatedText);
+      await challengeTranslationHelper(taskID, challengeEvidence);
+      challengedTask = await contract.getTask(taskID);
     });
 
     it("Should emit a Ruling event when the arbitrator rules the dispute", async () => {
+      const challengedTask = await contract.getTask(taskID);
       const ruling = DisputeRuling.TranslationRejected;
       const {txPromise} = await giveFinalRulingHelper(challengedTask.disputeID, ruling);
 
@@ -768,43 +567,12 @@ describe("Linguo contract", async () => {
       expect(taskDispute.hasRuling).to.equal(true, "Task dispute should have ruling");
       expect(taskDispute.taskID).to.equal(taskID, "Wrong task");
     });
-  });
-
-  describe("Execute ruling", () => {
-    let challengedTask;
-
-    beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-      const [_3, updatedTask] = await challengeTranslationHelper(taskID, submittedTask, challengeEvidence);
-
-      challengedTask = updatedTask;
-    });
-
-    it("Should update the task state when the ruling is executed", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-      await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      const [actualTaskID, actualTask] = await await executeRulingHelper(taskID, challengedTask);
-      const actualHash = await contract.taskHashes(actualTaskID);
-      const expectedHash = await contract.hashTaskState(actualTask);
-      const ZERO = BigNumber.from(0);
-
-      expect(actualTaskID).to.equal(taskID, "Executed on wrong task");
-      expect(actualTask.status).to.equal(TaskStatus.Resolved, "Invalid status");
-      expect(actualTask.ruling).to.equal(BigNumber.from(ruling), "Invalid ruling");
-      expect(actualTask.requesterDeposit).to.equal(ZERO, "Invalid requesterDeposit");
-      expect(actualTask.translatorDeposit).to.equal(ZERO, "Invalid translatorDeposit");
-      expect(actualHash).to.equal(expectedHash, "Invalid task state hash");
-    });
 
     it("Should emit a TaskResolved event with the correct reason when the ruling is executed", async () => {
       const ruling = DisputeRuling.TranslationApproved;
-      await giveFinalRulingHelper(challengedTask.disputeID, ruling);
+      const {txPromise} = await giveFinalRulingHelper(challengedTask.disputeID, ruling);
 
-      const [actualTaskID, __, {txPromise}] = await await executeRulingHelper(taskID, challengedTask);
-
-      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(actualTaskID, "dispute-settled");
+      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, ResolveReason.DisputeSettled);
     });
 
     it("Should pay all parties correctly when the arbitrator refused to rule", async () => {
@@ -815,8 +583,6 @@ describe("Linguo contract", async () => {
         challenger: await challenger.getBalance(),
       };
       await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      await executeRulingHelper(taskID, challengedTask);
 
       const balancesAfter = {
         requester: await requester.getBalance(),
@@ -845,8 +611,6 @@ describe("Linguo contract", async () => {
         challenger: await challenger.getBalance(),
       };
       await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      await executeRulingHelper(taskID, challengedTask);
 
       const balancesAfter = {
         requester: await requester.getBalance(),
@@ -878,8 +642,6 @@ describe("Linguo contract", async () => {
       };
       await giveFinalRulingHelper(challengedTask.disputeID, ruling);
 
-      await executeRulingHelper(taskID, challengedTask);
-
       const balancesAfter = {
         requester: await requester.getBalance(),
         translator: await translator.getBalance(),
@@ -904,11 +666,11 @@ describe("Linguo contract", async () => {
     let challengedTask;
 
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-      const [_3, updatedTask] = await challengeTranslationHelper(taskID, submittedTask, challengeEvidence);
+      await assignTaskHelper(taskID);
+      await submitTranslationHelper(taskID, translatedText);
+      await challengeTranslationHelper(taskID, challengeEvidence);
 
-      challengedTask = updatedTask;
+      challengedTask = await contract.getTask(taskID);
     });
 
     it("Should emit an AppealFeePaid and an AppealFeeContribution when a party pays the full appeal fee", async () => {
@@ -918,7 +680,7 @@ describe("Linguo contract", async () => {
       const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      const loserTx = await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
+      const loserTx = await fundAppealHelper(taskID, loserAppealFee, loserParty);
 
       await expect(loserTx.txPromise).to.emit(contract, "AppealFeePaid").withArgs(taskID, loserParty);
       await expect(loserTx.txPromise)
@@ -933,7 +695,7 @@ describe("Linguo contract", async () => {
       const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
 
       const roundInfo = await contract.getRoundInfo(taskID, 0);
       expect(roundInfo.paidFees[loserParty]).to.equal(loserAppealFee, "Invalid paidFees for party");
@@ -953,7 +715,7 @@ describe("Linguo contract", async () => {
       const paidFee = loserAppealFee.div(2);
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, paidFee, loserParty);
+      await fundAppealHelper(taskID, paidFee, loserParty);
 
       const roundInfo = await contract.getRoundInfo(taskID, 0);
       expect(roundInfo.paidFees[loserParty]).to.equal(paidFee, "Invalid paidFees for party");
@@ -974,7 +736,7 @@ describe("Linguo contract", async () => {
       const balanceBefore = await loserSigner.getBalance();
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, paidFee, loserParty);
+      await fundAppealHelper(taskID, paidFee, loserParty);
 
       const roundInfo = await contract.getRoundInfo(taskID, 0);
       expect(roundInfo.paidFees[loserParty]).to.equal(loserAppealFee, "Invalid paidFees for party");
@@ -998,10 +760,12 @@ describe("Linguo contract", async () => {
       const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
-      const {txPromise} = await fundAppealHelper(taskID, challengedTask, winnerAppealFee, winnerParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
+      const {txPromise} = await fundAppealHelper(taskID, winnerAppealFee, winnerParty);
 
-      await expect(txPromise).to.emit(arbitrator, "AppealDecision").withArgs(task.disputeID, contract.address);
+      await expect(txPromise)
+        .to.emit(arbitrator, "AppealDecision")
+        .withArgs(challengedTask.disputeID, contract.address);
     });
 
     it("Should properly update the current round state when both parties pay their respective fees", async () => {
@@ -1012,8 +776,8 @@ describe("Linguo contract", async () => {
       const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
-      await fundAppealHelper(taskID, challengedTask, winnerAppealFee, winnerParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
+      await fundAppealHelper(taskID, winnerAppealFee, winnerParty);
 
       const currentRoundInfo = await contract.getRoundInfo(taskID, 0);
       const ZERO = BigNumber.from(0);
@@ -1035,8 +799,8 @@ describe("Linguo contract", async () => {
       const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
-      await fundAppealHelper(taskID, challengedTask, winnerAppealFee, winnerParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
+      await fundAppealHelper(taskID, winnerAppealFee, winnerParty);
 
       const numberOfRounds = await contract.getNumberOfRounds(taskID);
       const latestRoundInfo = await contract.getRoundInfo(taskID, numberOfRounds.sub(BigNumber.from(1)));
@@ -1057,9 +821,7 @@ describe("Linguo contract", async () => {
       await giveRulingHelper(challengedTask.disputeID, ruling);
       await increaseTime(appealTimeout / 2);
 
-      const txPromise = contract
-        .connect(loserSigner)
-        .fundAppeal(taskID, challengedTask, loserParty, {value: loserAppealFee});
+      const txPromise = contract.connect(loserSigner).fundAppeal(taskID, loserParty, {value: loserAppealFee});
 
       await expect(txPromise).to.be.revertedWith("1st half appeal period is over");
     });
@@ -1073,12 +835,10 @@ describe("Linguo contract", async () => {
       const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
       await increaseTime(appealTimeout / 2);
 
-      const txPromise = contract
-        .connect(winnerSigner)
-        .fundAppeal(taskID, challengedTask, winnerParty, {value: winnerAppealFee});
+      const txPromise = contract.connect(winnerSigner).fundAppeal(taskID, winnerParty, {value: winnerAppealFee});
 
       await expect(txPromise).not.to.be.reverted;
     });
@@ -1092,12 +852,10 @@ describe("Linguo contract", async () => {
       const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
       await increaseTime(appealTimeout + 1);
 
-      const txPromise = contract
-        .connect(winnerSigner)
-        .fundAppeal(taskID, challengedTask, winnerParty, {value: winnerAppealFee});
+      const txPromise = contract.connect(winnerSigner).fundAppeal(taskID, winnerParty, {value: winnerAppealFee});
 
       await expect(txPromise).to.be.revertedWith("Appeal period is over");
     });
@@ -1108,19 +866,16 @@ describe("Linguo contract", async () => {
       const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
       await increaseTime(appealTimeout + 1);
       const {txPromise} = await giveRulingHelper(challengedTask.disputeID, ruling);
 
-      const [_, actualTask] = await executeRulingHelper(taskID, challengedTask);
-
       const expectedRuling = DisputeRuling.TranslationApproved;
-      const taskDispute = await contract.taskDisputesByDisputeID(taskID);
+      const taskDispute = await contract.taskDisputesByDisputeID(challengedTask.disputeID);
 
       await expect(txPromise)
         .to.emit(contract, "Ruling")
-        .withArgs(arbitrator.address, actualTask.disputeID, expectedRuling);
-      expect(actualTask.ruling).to.equal(expectedRuling);
+        .withArgs(arbitrator.address, challengedTask.disputeID, expectedRuling);
       expect(taskDispute.ruling).to.equal(expectedRuling);
     });
 
@@ -1130,7 +885,7 @@ describe("Linguo contract", async () => {
       const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, loserAppealFee, loserParty);
+      await fundAppealHelper(taskID, loserAppealFee, loserParty);
 
       const balancesBefore = {
         requester: await requester.getBalance(),
@@ -1140,7 +895,6 @@ describe("Linguo contract", async () => {
 
       await increaseTime(appealTimeout + 1);
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await executeRulingHelper(taskID, challengedTask);
 
       const balancesAfter = {
         requester: await requester.getBalance(),
@@ -1181,7 +935,7 @@ describe("Linguo contract", async () => {
       const contributedAmount = loserAppealFee.div(10);
 
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, challengedTask, contributedAmount, TaskParty.Translator, other);
+      await fundAppealHelper(taskID, contributedAmount, TaskParty.Translator, other);
 
       const actualContributions = await contract.getContributions(taskID, await other.getAddress(), 0);
 
@@ -1189,25 +943,21 @@ describe("Linguo contract", async () => {
     });
   });
 
-  describe("Calculate withdrawable appeal fees and rewards", () => {
-    let challengedTask;
-
+  describe.only("Calculate withdrawable appeal fees and rewards", () => {
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-      const [_3, updatedTask] = await challengeTranslationHelper(taskID, submittedTask, challengeEvidence);
-
-      challengedTask = updatedTask;
+      await assignTaskHelper(taskID);
+      await submitTranslationHelper(taskID, translatedText);
+      await challengeTranslationHelper(taskID, challengeEvidence);
     });
 
     it("Should calculate the proper amounts withdrawable by each party when the translation is approved", async () => {
       const ruling = DisputeRuling.TranslationApproved;
 
-      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, challengedTask, ruling);
+      const {appealFees} = await fundAppealAndResolveHelper(taskID, ruling);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
       };
 
       const expectedAmounts = {
@@ -1228,11 +978,11 @@ describe("Linguo contract", async () => {
     it("Should calculate the proper amounts withdrawable by each party when the translation is rejected", async () => {
       const ruling = DisputeRuling.TranslationRejected;
 
-      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, challengedTask, ruling);
+      await fundAppealAndResolveHelper(taskID, ruling);
 
       const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await challenger.getAddress()),
+        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
+        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
       };
 
       const expectedAmounts = {
@@ -1253,7 +1003,7 @@ describe("Linguo contract", async () => {
     it("Should calculate the proper amounts withdrawable by each party when arbitrator refuses to rule", async () => {
       const ruling = DisputeRuling.RefusedToRule;
 
-      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, challengedTask, ruling);
+      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, ruling);
 
       const actualAmounts = {
         translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
@@ -1279,12 +1029,7 @@ describe("Linguo contract", async () => {
       const firstRuling = DisputeRuling.TranslationApproved;
       const finalRuling = DisputeRuling.TranslationRejected;
 
-      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(
-        taskID,
-        challengedTask,
-        firstRuling,
-        finalRuling
-      );
+      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, firstRuling, finalRuling);
 
       const actualAmounts = {
         translator: await contract.getTotalWithdrawableAmount(taskID, resolvedTask, await translator.getAddress()),
@@ -1311,9 +1056,9 @@ describe("Linguo contract", async () => {
     let challengedTask;
 
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-      const [_3, updatedTask] = await challengeTranslationHelper(taskID, submittedTask, challengeEvidence);
+      const [_1, assignedTask] = await assignTaskHelper(taskID);
+      const [_2, submittedTask] = await submitTranslationHelper(taskID, translatedText);
+      const [_3] = await challengeTranslationHelper(taskID, challengeEvidence);
 
       challengedTask = updatedTask;
     });
@@ -1506,9 +1251,9 @@ describe("Linguo contract", async () => {
     let challengedTask;
 
     beforeEach("Assign task to translator, submit and challenge", async () => {
-      const [_1, assignedTask] = await assignTaskHelper(taskID, task);
-      const [_2, submittedTask] = await submitTranslationHelper(taskID, assignedTask, translatedText);
-      const [_3, updatedTask] = await challengeTranslationHelper(taskID, submittedTask, challengeEvidence);
+      const [_1, assignedTask] = await assignTaskHelper(taskID);
+      const [_2, submittedTask] = await submitTranslationHelper(taskID, translatedText);
+      const [_3] = await challengeTranslationHelper(taskID, challengeEvidence);
 
       challengedTask = updatedTask;
     });
@@ -1590,14 +1335,13 @@ describe("Linguo contract", async () => {
 
       await increaseTime(appealTimeout + 1);
       await giveRulingHelper(challengedTask.disputeID, ruling);
-      const [_, resolvedTask] = await executeRulingHelper(taskID, challengedTask);
 
       const balancesBefore = {
         translator: await translator.getBalance(),
         challenger: await challenger.getBalance(),
       };
 
-      await batchWithdrawHelper(taskID, resolvedTask, [await translator.getAddress(), await challenger.getAddress()]);
+      await batchWithdrawHelper(taskID, [await translator.getAddress(), await challenger.getAddress()]);
 
       const balancesAfter = {
         translator: await translator.getBalance(),
@@ -1615,7 +1359,7 @@ describe("Linguo contract", async () => {
 
     it("Should zero out the withdrawable amount for the winner party after the withdraw is made", async () => {
       const ruling = DisputeRuling.TranslationApproved;
-      const [_, resolvedTask] = await fundAppealAndResolveHelper(taskID, challengedTask, ruling);
+      const [_, resolvedTask] = await fundAppealAndResolveHelper(taskID, ruling);
 
       await batchWithdrawHelper(taskID, resolvedTask, [await translator.getAddress()]);
       const actualWithdrawableAmount = await contract.getTotalWithdrawableAmount(
@@ -1629,7 +1373,7 @@ describe("Linguo contract", async () => {
 
     it("Should zero out the withdrawable amount for the both parties when there is no winner after both withdraw", async () => {
       const ruling = DisputeRuling.RefusedToRule;
-      const [_, resolvedTask] = await fundAppealAndResolveHelper(taskID, challengedTask, ruling);
+      const [_, resolvedTask] = await fundAppealAndResolveHelper(taskID, ruling);
 
       await batchWithdrawHelper(taskID, resolvedTask, [await translator.getAddress(), await challenger.getAddress()]);
 
@@ -1645,7 +1389,7 @@ describe("Linguo contract", async () => {
     it("Should not allow the winner party to withdraw funds more than once for a given task", async () => {
       const ruling = DisputeRuling.TranslationApproved;
 
-      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, challengedTask, ruling);
+      const [_, resolvedTask, __, appealFees] = await fundAppealAndResolveHelper(taskID, ruling);
 
       const balanceBefore = await translator.getBalance();
 
@@ -1672,68 +1416,60 @@ describe("Linguo contract", async () => {
   async function updateTaskState(txPromise) {
     const tx = await txPromise;
     const receipt = await tx.wait();
-    const event = getEmittedEvent("TaskStateUpdated", receipt);
 
-    if (!event) {
-      throw new Error("TaskStateUpdated event was not emitted during the transaction");
-    }
-
-    const [updatedTaskId, updatedTask] = event.args;
-
-    return [updatedTaskId, updatedTask, {txPromise, tx, receipt}];
+    return [null, null, {txPromise, tx, receipt}];
   }
 
-  async function assignTaskHelper(taskID, task, signer = translator) {
+  async function assignTaskHelper(taskID, signer = translator) {
     const connectedContract = contract.connect(signer);
 
-    const requiredDeposit = await connectedContract.getTranslatorDeposit(taskID, task);
+    const requiredDeposit = await connectedContract.getTranslatorDeposit(taskID);
     // Adds an amount that would be enough to cover difference in price due to time increase
     const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
 
-    const txPromise = connectedContract.assignTask(taskID, task, {value: safeDeposit});
+    const txPromise = connectedContract.assignTask(taskID, {value: safeDeposit});
     return updateTaskState(txPromise);
   }
 
-  async function submitTranslationHelper(taskID, task, translatedText, signer = translator) {
+  async function submitTranslationHelper(taskID, translatedText, signer = translator) {
     const connectedContract = contract.connect(signer);
 
-    const txPromise = connectedContract.submitTranslation(taskID, task, translatedText);
+    const txPromise = connectedContract.submitTranslation(taskID, translatedText);
     return updateTaskState(txPromise);
   }
 
-  async function reimburseRequesterHelper(taskID, task, signer = translator) {
+  async function reimburseRequesterHelper(taskID, signer = translator) {
     const connectedContract = contract.connect(signer);
     await increaseTime(submissionTimeout + 3600);
 
-    const txPromise = connectedContract.reimburseRequester(taskID, task);
+    const txPromise = connectedContract.reimburseRequester(taskID);
     return updateTaskState(txPromise);
   }
 
-  async function acceptTranslationHelper(taskID, task, signer = requester) {
+  async function acceptTranslationHelper(taskID, signer = requester) {
     const connectedContract = contract.connect(signer);
     await increaseTime(reviewTimeout + 1);
 
-    const txPromise = connectedContract.acceptTranslation(taskID, task);
+    const txPromise = connectedContract.acceptTranslation(taskID);
     return updateTaskState(txPromise);
   }
 
-  async function challengeTranslationHelper(taskID, task, evidence, signer = challenger) {
+  async function challengeTranslationHelper(taskID, evidence, signer = challenger) {
     const connectedContract = contract.connect(signer);
-    const requiredDeposit = await connectedContract.getChallengerDeposit(taskID, task);
+    const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
 
-    const txPromise = connectedContract.challengeTranslation(taskID, task, evidence, {value: requiredDeposit});
+    const txPromise = connectedContract.challengeTranslation(taskID, evidence, {value: requiredDeposit});
     return updateTaskState(txPromise);
   }
 
   async function fundAppealHelper(
     taskID,
-    task,
     value,
     side,
     signer = side === TaskParty.Translator ? translator : challenger
   ) {
     const connectedContract = contract.connect(signer);
-    const txPromise = connectedContract.fundAppeal(taskID, task, side, {value});
+    const txPromise = connectedContract.fundAppeal(taskID, side, {value});
     const tx = await txPromise;
     const receipt = await tx.wait();
 
@@ -1761,13 +1497,9 @@ describe("Linguo contract", async () => {
     return {txPromise, tx, receipt};
   }
 
-  async function executeRulingHelper(taskID, task) {
-    return updateTaskState(contract.executeRuling(taskID, task));
-  }
-
-  async function fundAppealAndResolveHelper(taskID, task, firstRuling, appealRuling = firstRuling) {
+  async function fundAppealAndResolveHelper(taskID, firstRuling, appealRuling = firstRuling) {
     const appealFees = {};
-
+    const task = await contract.getTask(taskID);
     await giveRulingHelper(task.disputeID, firstRuling);
 
     if (firstRuling === DisputeRuling.RefusedToRule) {
@@ -1796,9 +1528,7 @@ describe("Linguo contract", async () => {
     }
 
     const appealDisputeID = await arbitrator.getAppealDisputeID(task.disputeID);
-    await giveFinalRulingHelper(appealDisputeID, appealRuling);
-
-    return [...(await executeRulingHelper(taskID, task)), appealFees];
+    return {...(await giveFinalRulingHelper(appealDisputeID, appealRuling)), appealFees};
   }
 
   /**
@@ -1854,8 +1584,6 @@ describe("Linguo contract", async () => {
 
     const appealDisputeID = await arbitrator.getAppealDisputeID(task.disputeID);
     await giveFinalRulingHelper(appealDisputeID, appealRuling);
-
-    return [...(await executeRulingHelper(taskID, task)), appealFees];
   }
 
   async function batchWithdrawHelper(taskID, task, addresses = []) {
