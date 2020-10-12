@@ -16,7 +16,7 @@ import "@kleros/erc-792/contracts/IArbitrator.sol";
 import "@kleros/erc-792/contracts/erc-1497/IEvidence.sol";
 import "@kleros/ethereum-libraries/contracts/CappedMath.sol";
 
-contract LinguoETH is IArbitrable, IEvidence {
+contract Linguo is IArbitrable, IEvidence {
     using CappedMath for uint256;
 
     /**

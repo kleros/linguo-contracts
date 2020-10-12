@@ -61,8 +61,8 @@ describe("Linguo contract", async () => {
     // Make appeals go to the same arbitrator
     await arbitrator.changeArbitrator(arbitrator.address);
 
-    const LinguoETH = await ethers.getContractFactory("LinguoETH", governor);
-    contract = await LinguoETH.deploy(
+    const Linguo = await ethers.getContractFactory("Linguo", governor);
+    contract = await Linguo.deploy(
       arbitrator.address,
       arbitratorExtraData,
       reviewTimeout,
