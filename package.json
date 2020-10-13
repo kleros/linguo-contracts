@@ -26,6 +26,7 @@
     "@kleros/kleros-interaction": "^0.10.0",
     "@nomiclabs/buidler": "^1.4.4",
     "@nomiclabs/buidler-ethers": "^2.0.0",
+    "@nomiclabs/buidler-truffle5": "^1.3.4",
     "@nomiclabs/buidler-waffle": "^2.0.0",
     "@nomiclabs/buidler-web3": "^1.3.4",
     "@openzeppelin/test-helpers": "^0.5.6",
@@ -40,11 +41,12 @@
     "lint-staged": "^10.2.11",
     "mocha": "^8.1.1",
     "npm-run-all": "^4.1.5",
+    "openzeppelin-solidity": "^1.12.0",
     "prettier": "^2.0.5",
     "prettier-plugin-solidity": "^1.0.0-alpha.56",
     "solhint": "^3.2.0",
     "solhint-plugin-prettier": "^0.0.4",
-    "web3": "^1.2.11"
+    "web3": "^1.3.0"
   },
   "dependencies": {
     "@kleros/erc-792": "^7.0.0",

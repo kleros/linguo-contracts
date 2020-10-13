@@ -1,1567 +1,1036 @@
-const {ethers} = require("@nomiclabs/buidler");
-const {solidity} = require("ethereum-waffle");
-const {use, expect} = require("chai");
-const {randomInt, getEmittedEvent, latestTime, increaseTime} = require("./helpers");
-const TaskStatus = require("../src/entities/TaskStatus");
-const TaskParty = require("../src/entities/TaskParty");
-const DisputeRuling = require("../src/entities/DisputeRuling");
-const ResolveReason = require("../src/entities/ResolveReason");
+const {artifacts, web3, assert} = require("@nomiclabs/buidler");
+const {expectRevert, time} = require("@openzeppelin/test-helpers");
+const Linguo = artifacts.require("./Linguo.sol");
+const Arbitrator = artifacts.require("./EnhancedAppealableArbitrator.sol");
 
-use(solidity);
+const randomInt = (max) => Math.ceil(Math.random() * max);
 
-const {BigNumber} = ethers;
+const expectThrow = (tx) => expectRevert.unspecified(tx);
 
-describe("Linguo contract", async () => {
-  const arbitrationFee = BigNumber.from(BigInt(1e18));
-  const arbitratorExtraData = "0x83";
-  const appealTimeout = 100;
-  const reviewTimeout = 2400;
-  const translationMultiplier = 1000;
-  const sharedMultiplier = 5000;
-  const winnerMultiplier = 3000;
-  const loserMultiplier = 7000;
-  const NON_PAYABLE_VALUE = BigNumber.from((2n ** 256n - 2n) / 2n);
-  const taskMinPrice = BigNumber.from(BigInt(1e18));
-  const taskMaxPrice = BigNumber.from(BigInt(5e18));
-  const submissionTimeout = 3600;
-  const translatedText = "/ipfs/QmaozNR7DZHQK1ZcU9p7QdrshMvXqWK6gpu5rmrkPdT3L4";
-  const challengeEvidence = "/ipfs/QmbUSy8HCn8J4TMDRRdxCbK2uCCtkQyZtY6XYv3y7kLgDC";
-  const evidence = "/ipfs/QmZtmD2qt6fJot32nabSP3CUjicnypEBz7bHVDhPQt9aAy";
+const increaseTime = (duration) => {
+  return time.increase(duration);
+};
 
-  let arbitrator;
+const latestTime = async () => {
+  return Number(await time.latest());
+};
+
+describe("Linguo", function () {
   let governor;
   let requester;
   let translator;
   let challenger;
   let other;
-  let crowdfunder1;
-  let crowdfunder2;
 
-  let contract;
+  before(async function () {
+    const accounts = await web3.eth.getAccounts();
+    governor = accounts[0];
+    requester = accounts[1];
+    translator = accounts[2];
+    challenger = accounts[3];
+    other = accounts[4];
+  });
+
+  const arbitrationFee = 1e12;
+  const arbitratorExtraData = "0x85";
+  const appealTimeOut = 100;
+  const reviewTimeout = 2400;
+  const translationMultiplier = 1000;
+  const challengeMultiplier = 2000;
+  const sharedMultiplier = 5000;
+  const winnerMultiplier = 3000;
+  const loserMultiplier = 7000;
+  const NOT_PAYABLE_VALUE = String((2n ** 256n - 2n) / 2n);
+
+  const taskMinPrice = 1e12;
+  const taskMaxPrice = 5e12;
+  const submissionTimeout = 3600;
+  let arbitrator;
+  let linguo;
   let MULTIPLIER_DIVISOR;
+  let taskTx;
+  let submissionTx;
   let currentTime;
   let secondsPassed;
 
-  let taskTx;
-  let taskTxReceipt;
-  let taskID;
+  beforeEach("initialize the contract", async function () {
+    arbitrator = await Arbitrator.new(arbitrationFee, governor, arbitratorExtraData, appealTimeOut, {from: governor});
 
-  beforeEach("Setup contracts", async () => {
-    [governor, requester, translator, challenger, other, crowdfunder1, crowdfunder2] = await ethers.getSigners();
-
-    const Arbitrator = await ethers.getContractFactory("EnhancedAppealableArbitrator");
-    arbitrator = await Arbitrator.deploy(
-      String(arbitrationFee),
-      ethers.constants.AddressZero,
-      arbitratorExtraData,
-      appealTimeout
-    );
-
-    await arbitrator.deployed();
-    // Make appeals go to the same arbitrator
     await arbitrator.changeArbitrator(arbitrator.address);
 
-    const Linguo = await ethers.getContractFactory("Linguo", governor);
-    contract = await Linguo.deploy(
+    linguo = await Linguo.new(
       arbitrator.address,
       arbitratorExtraData,
       reviewTimeout,
       translationMultiplier,
+      challengeMultiplier,
       sharedMultiplier,
       winnerMultiplier,
-      loserMultiplier
+      loserMultiplier,
+      {from: governor}
     );
-    await contract.deployed();
 
-    MULTIPLIER_DIVISOR = await contract.MULTIPLIER_DIVISOR();
+    MULTIPLIER_DIVISOR = (await linguo.MULTIPLIER_DIVISOR()).toNumber();
     currentTime = await latestTime();
+    taskTx = await linguo.createTask(currentTime + submissionTimeout, String(taskMinPrice), "TestMetaEvidence", {
+      from: requester,
+      value: String(taskMaxPrice),
+    });
     // Because of time fluctuation the timeout stored in the contract can deviate a little from the variable value.
     // So subtract small amount to prevent the time increase going out of timeout range.
-
-    taskTx = await contract
-      .connect(requester)
-      .createTask(currentTime + submissionTimeout, taskMinPrice, "TestMetaEvidence", {
-        value: taskMaxPrice,
-      });
-    taskTxReceipt = await taskTx.wait();
-    taskID = getEmittedEvent("TaskCreated", taskTxReceipt).args._taskID;
-
     secondsPassed = randomInt(submissionTimeout - 5);
     await increaseTime(secondsPassed);
   });
 
-  describe("Initialization", () => {
-    it("Should set the correct values in constructor", async () => {
-      expect(await contract.arbitrator()).to.equal(arbitrator.address, "Arbitrator address not properly set");
-      expect(await contract.arbitratorExtraData()).to.equal(
-        arbitratorExtraData,
-        "Arbitrator extra data not properly set"
-      );
-      expect(await contract.reviewTimeout()).to.equal(reviewTimeout, "Review timeout not properly set");
-      expect(await contract.translationMultiplier()).to.equal(
-        translationMultiplier,
-        "Translation multiplier not properly set"
-      );
-      expect(await contract.sharedStakeMultiplier()).to.equal(sharedMultiplier, "Shared multiplier not properly set");
-      expect(await contract.winnerStakeMultiplier()).to.equal(winnerMultiplier, "Winner multiplier not properly set");
-      expect(await contract.loserStakeMultiplier()).to.equal(loserMultiplier, "Loser multiplier not properly set");
-    });
+  it("Should set the correct values in constructor", async () => {
+    assert.equal(await linguo.arbitrator(), arbitrator.address);
+    assert.equal(await linguo.arbitratorExtraData(), arbitratorExtraData);
+    assert.equal(await linguo.reviewTimeout(), reviewTimeout);
+    assert.equal(await linguo.translationMultiplier(), translationMultiplier);
+    assert.equal(await linguo.challengeMultiplier(), challengeMultiplier);
+    assert.equal(await linguo.sharedStakeMultiplier(), sharedMultiplier);
+    assert.equal(await linguo.winnerStakeMultiplier(), winnerMultiplier);
+    assert.equal(await linguo.loserStakeMultiplier(), loserMultiplier);
   });
 
-  describe("Create new task", () => {
-    it("Should create a task when parameters are valid", async () => {
-      currentTime = await latestTime();
-      const deadline = currentTime + submissionTimeout;
-      const metaEvidence = "TestMetaEvidence";
-      const requesterAddress = await requester.getAddress();
-
-      const txPromise = contract.connect(requester).createTask(deadline, taskMinPrice, metaEvidence, {
-        value: taskMaxPrice,
-      });
-
-      const expectedTaskId = 1;
-
-      await expect(txPromise).to.emit(contract, "TaskCreated").withArgs(expectedTaskId, requesterAddress);
-      await expect(txPromise).to.emit(contract, "MetaEvidence").withArgs(expectedTaskId, metaEvidence);
-    });
-
-    it("Should revert when maxPrice is lower than minPrice", async () => {
-      currentTime = await latestTime();
-      const deadline = currentTime + submissionTimeout;
-      const metaEvidence = "TestMetaEvidence";
-
-      const tx = contract.connect(requester).createTask(deadline, taskMinPrice, metaEvidence, {
-        value: taskMinPrice.sub(1),
-      });
-
-      await expect(tx).to.be.revertedWith("Deposit value too low");
-    });
-
-    it("Should revert when deadline is before current time", async () => {
-      currentTime = await latestTime();
-      const deadline = currentTime - 1;
-      const metaEvidence = "TestMetaEvidence";
-
-      const tx = contract.connect(requester).createTask(deadline, taskMinPrice, metaEvidence, {
-        value: taskMaxPrice,
-      });
-
-      await expect(tx).to.be.revertedWith("Deadline must be in the future");
-    });
-  });
-
-  describe("Task price", () => {
-    it("Should return the correct task price before submission timeout", async () => {
-      const expectedPrice = taskMinPrice.add(taskMaxPrice.sub(taskMinPrice).mul(secondsPassed).div(submissionTimeout));
-      const delta = expectedPrice.div(100);
-
-      const actualPrice = await contract.getTaskPrice(taskID);
-
-      expect(actualPrice.sub(expectedPrice).abs()).to.be.lt(delta, "Invalid task price");
-    });
-
-    it("Should return the correct task price after submission timout has passed", async () => {
-      await increaseTime(submissionTimeout + 1);
-      const expectedPrice = BigNumber.from(0);
-
-      const actualPrice = await contract.getTaskPrice(taskID);
-
-      expect(actualPrice).to.equal(expectedPrice, "Invalid task price");
-    });
-
-    it("Should return the correct task price when status is not `Created`", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
-      // Adds an amount that would be enough to cover difference in price due to time increase
-      const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-      await submitTransaction(contract.assignTask(taskID, {value: safeDeposit}));
-
-      const expectedPrice = BigNumber.from(0);
-      const actualPrice = await contract.getTaskPrice(taskID);
-
-      expect(actualPrice).to.equal(expectedPrice, "Invalid task price");
-    });
-  });
-
-  describe("Translator deposit", () => {
-    it("Should return the correct deposit value before submission timeout", async () => {
-      const price = await contract.getTaskPrice(taskID);
-      const expectedDeposit = arbitrationFee.add(price.mul(translationMultiplier).div(MULTIPLIER_DIVISOR));
-      const delta = expectedDeposit.div(100);
-
-      const actualDeposit = await contract.getTranslatorDeposit(taskID);
-
-      expect(actualDeposit.sub(expectedDeposit).abs()).to.be.lt(delta, "Invalid translator deposit");
-    });
-
-    it("Should return the correct deposit value after submission timout has passed", async () => {
-      await increaseTime(submissionTimeout + 1);
-      const expectedDeposit = NON_PAYABLE_VALUE;
-
-      const actualDeposit = await contract.getTranslatorDeposit(taskID);
-
-      expect(actualDeposit).to.equal(expectedDeposit, "Invalid translator deposit");
-    });
-
-    it("Should return the correct deposit value when status is not `created`", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
-      // Adds an amount that would be enough to cover difference in price due to time increase
-      const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-      await submitTransaction(contract.assignTask(taskID, {value: safeDeposit}));
-
-      const expectedDeposit = NON_PAYABLE_VALUE;
-      const actualDeposit = await contract.getTranslatorDeposit(taskID);
-
-      expect(actualDeposit).to.equal(expectedDeposit, "Invalid translator deposit");
-    });
-  });
-
-  describe("Assign task", () => {
-    it("Should emit a TaskAssigned event when assigning the task to a translator", async () => {
-      const expectedPrice = await contract.getTaskPrice(taskID);
-      const delta = expectedPrice.div(100);
-      const {txPromise, receipt} = await assignTaskHelper(taskID);
-
-      await expect(txPromise).to.emit(contract, "TaskAssigned");
-
-      const [actualTaskID, actualTranslator, actualPrice] = getEmittedEvent("TaskAssigned", receipt).args;
-      expect(actualTaskID).to.equal(taskID);
-      expect(actualTranslator).to.equal(await translator.getAddress());
-      expect(actualPrice.sub(expectedPrice).abs()).to.be.lt(delta, "Invalid task assigned price");
-    });
-
-    it("Should update the task state when assigning the task to a translator", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
-      const delta = requiredDeposit.div(100);
-
-      const {receipt} = await assignTaskHelper(taskID);
-      const {_price: assignedPrice} = getEmittedEvent("TaskAssigned", receipt).args;
-      const actualTask = await contract.getTask(taskID);
-
-      expect(actualTask.status).to.equal(TaskStatus.Assigned, "Invalid status");
-      expect(actualTask.parties[TaskParty.Translator]).to.equal(await translator.getAddress(), "Invalid translator");
-      expect(actualTask.requesterDeposit).to.equal(assignedPrice, "Invalid price");
-      expect(actualTask.translatorDeposit.sub(requiredDeposit).abs()).to.be.lt(delta, "Invalid translatorDeposit");
-    });
-
-    it("Should send the remaining requester deposit back to the requester when assigning the task to a translator", async () => {
-      const requesterBalanceBefore = await requester.getBalance();
-
-      const {receipt} = await assignTaskHelper(taskID);
-      const {_price: assignedPrice} = getEmittedEvent("TaskAssigned", receipt).args;
-      const actualTask = await contract.tasks(taskID);
-      const requesterBalanceAfter = await requester.getBalance();
-
-      const remainingDeposit = actualTask.maxPrice.sub(assignedPrice);
-      expect(requesterBalanceAfter).to.equal(
-        requesterBalanceBefore.add(remainingDeposit),
-        "Did not send the remaing requester deposit back to the requester"
-      );
-    });
-
-    it("Should revert when sending less than the required translator deposit", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
-      const attemptedDeposit = requiredDeposit.sub(1000);
-
-      await expect(contract.assignTask(taskID, {value: attemptedDeposit})).to.be.revertedWith("Deposit value too low");
-    });
-
-    it("Should revert when the deadline has already passed", async () => {
-      // Adds an amount that would be enough to cover difference in price due to time increase
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
-      // Adds an amount that would be enough to cover difference in price due to time increase
-      const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-
-      await increaseTime(submissionTimeout + 3600);
-
-      await expect(contract.assignTask(taskID, {value: safeDeposit})).to.be.revertedWith("Deadline has passed");
-    });
-
-    it("Should revert when task is already assigned", async () => {
-      const requiredDeposit = await contract.getTranslatorDeposit(taskID);
-      // Adds an amount that would be enough to cover difference in price due to time increase
-      const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-
-      await assignTaskHelper(taskID);
-
-      await expect(contract.assignTask(taskID, {value: safeDeposit})).to.be.revertedWith("Invalid task status");
-    });
-  });
-
-  describe("Submit translation", () => {
-    beforeEach("Assign task to translator", async () => {
-      await assignTaskHelper(taskID);
-    });
-
-    it("Should emit a TranslationSubmitted event when the translator submits the translated text", async () => {
-      const {txPromise} = await submitTranslationHelper(taskID, translatedText);
-
-      await expect(txPromise)
-        .to.emit(contract, "TranslationSubmitted")
-        .withArgs(taskID, await translator.getAddress(), translatedText);
-    });
-
-    it("Should not allow anyone else other than the translator to submit the translated text", async () => {
-      const connectedContract = contract.connect(other);
-
-      expect(connectedContract.submitTranslation(taskID, translatedText)).to.be.revertedWith(
-        "Only translator is allowed"
-      );
-    });
-
-    it("Should not allow translator to submit the translated text after the deadline has passed", async () => {
-      const connectedContract = contract.connect(translator);
-      await increaseTime(submissionTimeout + 3600);
-
-      expect(connectedContract.submitTranslation(taskID, translatedText)).to.be.revertedWith("Deadline has passed");
-    });
-  });
-
-  describe("Reimburse requester", () => {
-    it("Should reimburse the requester if no translator picked the task before the deadline has passed", async () => {
-      await increaseTime(submissionTimeout + 3600);
-
-      await expect(() => contract.reimburseRequester(taskID)).to.changeBalance(requester, taskMaxPrice);
-    });
-
-    it("Should emit a TaskResolved event when the requester is reimbursed", async () => {
-      const {txPromise} = await reimburseRequesterHelper(taskID);
-
-      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, ResolveReason.RequesterReimbursed);
-    });
-
-    it("Should reimburse the requester if the translator did not submit the task before the deadline has passed", async () => {
-      await assignTaskHelper(taskID);
-      await increaseTime(submissionTimeout + 3600);
-
-      const assignedTask = await contract.getTask(taskID);
-      // The requester takes the translator deposit as well.
-      const expectedBalanceChange = assignedTask.requesterDeposit.add(assignedTask.translatorDeposit);
-
-      await expect(() => contract.reimburseRequester(taskID)).to.changeBalance(requester, expectedBalanceChange);
-    });
-
-    it("Should not be possible to reimburse if submission timeout has not passed", async () => {
-      await increaseTime(100);
-
-      await expect(contract.reimburseRequester(taskID)).to.be.revertedWith("Deadline has not passed");
-    });
-  });
-
-  describe("Accept translation", () => {
-    beforeEach("Assign task to translator and submit translation", async () => {
-      await assignTaskHelper(taskID);
-      await submitTranslationHelper(taskID, translatedText);
-    });
-
-    it("Should emit a TaskResolved event when the review timeout has passed without a challenge", async () => {
-      const {txPromise} = await acceptTranslationHelper(taskID);
-
-      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, ResolveReason.TranslationAccepted);
-    });
-
-    it("Should pay the translator when the translation is accepted", async () => {
-      const translatorBalanceBefore = await translator.getBalance();
-      const taskInReview = await contract.getTask(taskID);
-      const taskPrice = taskInReview.requesterDeposit;
-      const translatorDeposit = taskInReview.translatorDeposit;
-      const balanceChange = taskPrice.add(translatorDeposit);
-
-      await acceptTranslationHelper(taskID);
-
-      const translatorBalanceAfter = await translator.getBalance();
-
-      expect(translatorBalanceAfter).to.equal(translatorBalanceBefore.add(balanceChange));
-    });
-
-    it("Should not accept the translation when review timeout has not passed yet", async () => {
-      await increaseTime(reviewTimeout - 1000);
-
-      await expect(contract.acceptTranslation(taskID)).to.be.revertedWith("Still in review period");
-    });
-
-    it("Should not accept the translation when the translation was challenged", async () => {
-      await challengeTranslationHelper(taskID, challengeEvidence);
-      await increaseTime(reviewTimeout + 20);
-
-      await expect(contract.acceptTranslation(taskID)).to.be.revertedWith("Invalid task status");
-    });
-  });
-
-  describe("Challenge translation", () => {
-    beforeEach("Assign task to translator, submit and challenge", async () => {
-      await assignTaskHelper(taskID);
-      await submitTranslationHelper(taskID, translatedText);
-    });
-
-    it("Should emit both a TranslationChallenged, a Dispute and an Evidence events when someone challenges the translation with an evidence", async () => {
-      const {txPromise} = await challengeTranslationHelper(taskID, challengeEvidence);
-
-      await expect(txPromise)
-        .to.emit(contract, "TranslationChallenged")
-        .withArgs(taskID, await challenger.getAddress());
-      await expect(txPromise)
-        .to.emit(contract, "Dispute")
-        .withArgs(arbitrator.address, BigNumber.from(0), taskID, taskID);
-      await expect(txPromise)
-        .to.emit(contract, "Evidence")
-        .withArgs(arbitrator.address, taskID, await challenger.getAddress(), challengeEvidence);
-    });
-
-    it("Should emit only a TranslationChallenged and a Dispute events when someone challenges the translation without providing an evidence", async () => {
-      const {txPromise} = await challengeTranslationHelper(taskID, "");
-
-      await expect(txPromise).not.to.emit(contract, "Evidence");
-
-      await expect(txPromise)
-        .to.emit(contract, "TranslationChallenged")
-        .withArgs(taskID, await challenger.getAddress());
-      await expect(txPromise)
-        .to.emit(contract, "Dispute")
-        .withArgs(arbitrator.address, BigNumber.from(0), taskID, taskID);
-    });
-
-    it("Should update the rounds state of the translation", async () => {
-      await challengeTranslationHelper(taskID, challengeEvidence);
-
-      const actualNumberOfRounds = await contract.getNumberOfRounds(taskID);
-      const roundInfo = await contract.getRoundInfo(taskID, 0);
-
-      const ZERO = BigNumber.from(0);
-
-      expect(actualNumberOfRounds).to.equal(BigNumber.from(1), "Invalid number of rounds");
-      expect(roundInfo.paidFees).to.deep.equal([ZERO, ZERO, ZERO]);
-      expect(roundInfo.hasPaid).to.deep.equal([false, false, false]);
-      expect(roundInfo.feeRewards).to.equal(ZERO);
-    });
-
-    it("Should update the task dispute state of the translation", async () => {
-      await challengeTranslationHelper(taskID, challengeEvidence);
-      const challengedTask = await contract.getTask(taskID);
-      const taskDispute = await contract.taskDisputesByDisputeID(challengedTask.disputeID);
-
-      expect(taskDispute.exists).to.equal(true);
-      expect(taskDispute.hasRuling).to.equal(false);
-      expect(taskDispute.taskID).to.equal(taskID);
-    });
-
-    it("Should create a dispute on the arbitrator when someone challenges a translation", async () => {
-      const expectedNoOfChoices = BigNumber.from(2);
-
-      await challengeTranslationHelper(taskID, challengeEvidence);
-
-      const dispute = await arbitrator.disputes(0);
-      expect(dispute.arbitrated).to.equal(contract.address, "Arbitrable not set up properly");
-      expect(dispute.choices).to.equal(expectedNoOfChoices);
-    });
-
-    it("Should not be allowed to challenge if the review period has already passed", async () => {
-      const connectedContract = contract.connect(challenger);
-      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
-
-      await increaseTime(reviewTimeout + 1);
-
-      const txPromise = connectedContract.challengeTranslation(taskID, challengeEvidence, {
-        value: requiredDeposit,
-      });
-
-      await expect(txPromise).to.be.revertedWith("Review period has passed");
-    });
-
-    it("Should not be allowed to challenge if the task was already resolved", async () => {
-      const connectedContract = contract.connect(challenger);
-      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
-      await increaseTime(reviewTimeout + 1);
-      await submitTransaction(connectedContract.acceptTranslation(taskID));
-
-      const txPromise = connectedContract.challengeTranslation(taskID, challengeEvidence, {
-        value: requiredDeposit,
-      });
-
-      await expect(txPromise).to.be.revertedWith("Invalid task status");
-    });
-
-    it("Should not be allowed to challenge if challenger deposit value is too low", async () => {
-      const connectedContract = contract.connect(challenger);
-      const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
-      const actualDeposit = requiredDeposit.sub(BigNumber.from(1));
-
-      const txPromise = connectedContract.challengeTranslation(taskID, challengeEvidence, {
-        value: actualDeposit,
-      });
-
-      await expect(txPromise).to.be.revertedWith("Deposit value too low");
-    });
-  });
-
-  describe("Submit evidence", () => {
-    beforeEach("Assign task to translator, submit and challenge", async () => {
-      await assignTaskHelper(taskID);
-      await submitTranslationHelper(taskID, translatedText);
-      await challengeTranslationHelper(taskID, challengeEvidence);
-    });
-
-    it("Should emit an Evidence event when one of the parties submits an evidence", async () => {
-      const {txPromise} = await submitTransaction(contract.connect(translator).submitEvidence(taskID, evidence));
-      const challengedTask = await contract.getTask(taskID);
-
-      await expect(txPromise)
-        .to.emit(contract, "Evidence")
-        .withArgs(arbitrator.address, taskID, challengedTask.parties[TaskParty.Translator], evidence);
-    });
-
-    it("Should allow a 3rd-party to submit an Evidence in its behalf", async () => {
-      const txPromise = contract.connect(other).submitEvidence(taskID, evidence);
-
-      await expect(txPromise)
-        .to.emit(contract, "Evidence")
-        .withArgs(arbitrator.address, taskID, await other.getAddress(), evidence);
-    });
-
-    it("Should not allow to submit an evidence if the task dispute already has a ruling", async () => {
-      const task = await contract.getTask(taskID);
-      const ruling = DisputeRuling.TranslationApproved;
-      await giveFinalRulingHelper(task.disputeID, ruling);
-
-      const txPromise = contract.submitEvidence(taskID, evidence);
-
-      await expect(txPromise).to.be.revertedWith("Dispute already settled");
-    });
-
-    it("Should not allow to submit an evidence if the task is already resolved", async () => {
-      const task = await contract.getTask(taskID);
-      const ruling = DisputeRuling.TranslationApproved;
-      await giveFinalRulingHelper(task.disputeID, ruling);
-
-      const txPromise = contract.submitEvidence(taskID, evidence);
-
-      await expect(txPromise).to.be.revertedWith("Dispute already settled");
-    });
-  });
-
-  describe("Arbitrator gives ruling", () => {
-    let challengedTask;
-
-    beforeEach("Assign task to translator, submit and challenge", async () => {
-      await assignTaskHelper(taskID);
-      await submitTranslationHelper(taskID, translatedText);
-      await challengeTranslationHelper(taskID, challengeEvidence);
-      challengedTask = await contract.getTask(taskID);
-    });
-
-    it("Should emit a Ruling event when the arbitrator rules the dispute", async () => {
-      const challengedTask = await contract.getTask(taskID);
-      const ruling = DisputeRuling.TranslationRejected;
-      const {txPromise} = await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      await expect(txPromise)
-        .to.emit(contract, "Ruling")
-        .withArgs(arbitrator.address, challengedTask.disputeID, ruling);
-    });
-
-    it("Should update the task dispute state when the arbitrator rules the dispute ", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-      await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      const taskDispute = await contract.taskDisputesByDisputeID(challengedTask.disputeID);
-      expect(taskDispute.exists).to.equal(true, "Task dispute should exist");
-      expect(taskDispute.hasRuling).to.equal(true, "Task dispute should have ruling");
-      expect(taskDispute.taskID).to.equal(taskID, "Wrong task");
-    });
-
-    it("Should emit a TaskResolved event with the correct reason when the ruling is executed", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-      const {txPromise} = await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      await expect(txPromise).to.emit(contract, "TaskResolved").withArgs(taskID, ResolveReason.DisputeSettled);
-    });
-
-    it("Should pay all parties correctly when the arbitrator refused to rule", async () => {
-      const ruling = DisputeRuling.RefusedToRule;
-      const balancesBefore = {
-        requester: await requester.getBalance(),
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-      await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      const balancesAfter = {
-        requester: await requester.getBalance(),
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-
-      const expectedBalances = {
-        requester: balancesBefore.requester.add(challengedTask.requesterDeposit),
-        translator: balancesBefore.translator.add(challengedTask.translatorDeposit.div(BigNumber.from(2))),
-        challenger: balancesBefore.challenger.add(challengedTask.translatorDeposit.div(BigNumber.from(2))),
-      };
-
-      const delta = BigNumber.from(1000);
-
-      expect(expectedBalances.requester.sub(balancesAfter.requester).abs()).to.be.lt(delta);
-      expect(expectedBalances.translator.sub(balancesAfter.translator).abs()).to.be.lt(delta);
-      expect(expectedBalances.challenger.sub(balancesAfter.challenger).abs()).to.be.lt(delta);
-    });
-
-    it("Should pay all parties correctly when the arbitrator approved the translation", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-      const balancesBefore = {
-        requester: await requester.getBalance(),
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-      await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      const balancesAfter = {
-        requester: await requester.getBalance(),
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-
-      const expectedBalances = {
-        requester: balancesBefore.requester,
-        translator: balancesBefore.translator
-          .add(challengedTask.requesterDeposit)
-          .add(challengedTask.translatorDeposit),
-        challenger: balancesBefore.challenger,
-      };
-
-      const delta = BigNumber.from(1000);
-
-      expect(expectedBalances.requester.sub(balancesAfter.requester).abs()).to.be.lt(delta);
-      expect(expectedBalances.translator.sub(balancesAfter.translator).abs()).to.be.lt(delta);
-      expect(expectedBalances.challenger.sub(balancesAfter.challenger).abs()).to.be.lt(delta);
-    });
-
-    it("Should pay all parties correctly when the arbitrator rejected the translation", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const balancesBefore = {
-        requester: await requester.getBalance(),
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-      await giveFinalRulingHelper(challengedTask.disputeID, ruling);
-
-      const balancesAfter = {
-        requester: await requester.getBalance(),
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-
-      const expectedBalances = {
-        requester: balancesBefore.requester.add(challengedTask.requesterDeposit),
-        translator: balancesBefore.translator,
-        challenger: balancesBefore.challenger.add(challengedTask.translatorDeposit),
-      };
-
-      const delta = BigNumber.from(1000);
-
-      expect(expectedBalances.requester.sub(balancesAfter.requester).abs()).to.be.lt(delta);
-      expect(expectedBalances.translator.sub(balancesAfter.translator).abs()).to.be.lt(delta);
-      expect(expectedBalances.challenger.sub(balancesAfter.challenger).abs()).to.be.lt(delta);
-    });
-  });
-
-  describe("Appeal decision", () => {
-    let challengedTask;
-
-    beforeEach("Assign task to translator, submit and challenge", async () => {
-      await assignTaskHelper(taskID);
-      await submitTranslationHelper(taskID, translatedText);
-      await challengeTranslationHelper(taskID, challengeEvidence);
-
-      challengedTask = await contract.getTask(taskID);
-    });
-
-    it("Should emit an AppealFeePaid and an AppealFeeContribution when a party pays the full appeal fee", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const loserSigner = translator;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      const loserTx = await fundAppealHelper(taskID, loserAppealFee, loserParty);
-
-      await expect(loserTx.txPromise).to.emit(contract, "AppealFeePaid").withArgs(taskID, loserParty);
-      await expect(loserTx.txPromise)
-        .to.emit(contract, "AppealFeeContribution")
-        .withArgs(taskID, loserParty, await loserSigner.getAddress(), loserAppealFee);
-    });
-
-    it("Should update the round info state accordingly when a party pays the full appeal fee", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const winnerParty = TaskParty.Challenger;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-
-      const roundInfo = await contract.getRoundInfo(taskID, 0);
-      expect(roundInfo.paidFees[loserParty]).to.equal(loserAppealFee, "Invalid paidFees for party");
-      expect(roundInfo.hasPaid[loserParty]).to.equal(true, "Invalid hasPaid for party");
-      expect(roundInfo.paidFees[winnerParty]).to.equal(
-        BigNumber.from(0),
-        "Should not register paid fess for the other party"
-      );
-      expect(roundInfo.hasPaid[winnerParty]).to.equal(false, "Should not register as paid for the other party");
-    });
-
-    it("Should update the round info state accordingly when a party pays only a part of the appeal fee", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const winnerParty = TaskParty.Challenger;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const paidFee = loserAppealFee.div(2);
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, paidFee, loserParty);
-
-      const roundInfo = await contract.getRoundInfo(taskID, 0);
-      expect(roundInfo.paidFees[loserParty]).to.equal(paidFee, "Invalid paidFees for party");
-      expect(roundInfo.hasPaid[loserParty]).to.equal(false, "Invalid hasPaid for party");
-      expect(roundInfo.paidFees[winnerParty]).to.equal(
-        BigNumber.from(0),
-        "Should not register paid fess for the other party"
-      );
-      expect(roundInfo.hasPaid[winnerParty]).to.equal(false, "Should not register as paid for the other party");
-    });
-
-    it("Should update the round info state accordingly when a party pays more that the appeal fee and send the remainig ETH back to the sender", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const loserSigner = translator;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const paidFee = loserAppealFee.mul(10);
-      const balanceBefore = await loserSigner.getBalance();
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, paidFee, loserParty);
-
-      const roundInfo = await contract.getRoundInfo(taskID, 0);
-      expect(roundInfo.paidFees[loserParty]).to.equal(loserAppealFee, "Invalid paidFees for party");
-      expect(roundInfo.hasPaid[loserParty]).to.equal(true, "Invalid hasPaid for party");
-
-      const balanceAfter = await loserSigner.getBalance();
-      // Allow 1% difference
-      const delta = balanceBefore.div(100);
-
-      expect(balanceAfter.sub(balanceBefore).sub(loserAppealFee).abs()).to.be.lt(
-        delta,
-        "Invalid balance after funding"
-      );
-    });
-
-    it("Should issue an appeal when both parties pay their respective fees", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const winnerParty = TaskParty.Challenger;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-      const {txPromise} = await fundAppealHelper(taskID, winnerAppealFee, winnerParty);
-
-      await expect(txPromise)
-        .to.emit(arbitrator, "AppealDecision")
-        .withArgs(challengedTask.disputeID, contract.address);
-    });
-
-    it("Should properly update the current round state when both parties pay their respective fees", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const winnerParty = TaskParty.Challenger;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-      await fundAppealHelper(taskID, winnerAppealFee, winnerParty);
-
-      const currentRoundInfo = await contract.getRoundInfo(taskID, 0);
-      const ZERO = BigNumber.from(0);
-      const expectedFeeRewards = loserAppealFee.add(winnerAppealFee).sub(arbitrationFee);
-
-      expect(currentRoundInfo.feeRewards).to.equal(expectedFeeRewards, "Invalid new round feeRewards");
-      expect(currentRoundInfo.paidFees).to.deep.equal(
-        [ZERO, loserAppealFee, winnerAppealFee],
-        "Invalid new round paidFees"
-      );
-      expect(currentRoundInfo.hasPaid).to.deep.equal([false, true, true], "Invalid new round hasPaid");
-    });
-
-    it("Should register a new round for the task when both parties pay their respective fees", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const winnerParty = TaskParty.Challenger;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-      await fundAppealHelper(taskID, winnerAppealFee, winnerParty);
-
-      const numberOfRounds = await contract.getNumberOfRounds(taskID);
-      const latestRoundInfo = await contract.getRoundInfo(taskID, numberOfRounds.sub(BigNumber.from(1)));
-      const ZERO = BigNumber.from(0);
-
-      expect(numberOfRounds).to.equal(BigNumber.from(2), "Invalid number of rounds");
-      expect(latestRoundInfo.feeRewards).to.equal(ZERO, "Invalid new round feeRewards");
-      expect(latestRoundInfo.paidFees).to.deep.equal([ZERO, ZERO, ZERO], "Invalid new round paidFees");
-      expect(latestRoundInfo.hasPaid).to.deep.equal([false, false, false], "Invalid new round hasPaid");
-    });
-
-    it("Should not allow the losing side to fund the appeal when the first half of the appeal period is over", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const loserSigner = translator;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await increaseTime(appealTimeout / 2);
-
-      const txPromise = contract.connect(loserSigner).fundAppeal(taskID, loserParty, {value: loserAppealFee});
-
-      await expect(txPromise).to.be.revertedWith("1st half appeal period is over");
-    });
-
-    it("Should allow the winning side to fund the appeal even when the first half of the appeal period is over", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const winnerParty = TaskParty.Challenger;
-      const winnerSigner = challenger;
-      const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-      await increaseTime(appealTimeout / 2);
-
-      const txPromise = contract.connect(winnerSigner).fundAppeal(taskID, winnerParty, {value: winnerAppealFee});
-
-      await expect(txPromise).not.to.be.reverted;
-    });
-
-    it("Should not allow the winning side to fund the appeal when appeal is over", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const winnerParty = TaskParty.Challenger;
-      const winnerSigner = challenger;
-      const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-      await increaseTime(appealTimeout + 1);
-
-      const txPromise = contract.connect(winnerSigner).fundAppeal(taskID, winnerParty, {value: winnerAppealFee});
-
-      await expect(txPromise).to.be.revertedWith("Appeal period is over");
-    });
-
-    it("Should change the ruling when the loser paid the full appeal fee while the winner did not", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-      await increaseTime(appealTimeout + 1);
-      const {txPromise} = await giveRulingHelper(challengedTask.disputeID, ruling);
-
-      const expectedRuling = DisputeRuling.TranslationApproved;
-      const taskDispute = await contract.taskDisputesByDisputeID(challengedTask.disputeID);
-
-      await expect(txPromise)
-        .to.emit(contract, "Ruling")
-        .withArgs(arbitrator.address, challengedTask.disputeID, expectedRuling);
-      expect(taskDispute.ruling).to.equal(expectedRuling);
-    });
-
-    it("Should pay the parties accordingly upon executeRuling when the loser paid the full appeal fee while the winner did not", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserParty = TaskParty.Translator;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-
-      const balancesBefore = {
-        requester: await requester.getBalance(),
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-
-      await increaseTime(appealTimeout + 1);
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-
-      const balancesAfter = {
-        requester: await requester.getBalance(),
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-
-      /* Translation was rejected by the arbitrator, however the ruling
-       * was changed because the winner failed to pay the appeal fee.
-       */
-      const expectedBalances = {
-        requester: balancesBefore.requester,
-        translator: balancesBefore.translator
-          .add(challengedTask.requesterDeposit)
-          .add(challengedTask.translatorDeposit),
-        challenger: balancesBefore.challenger,
-      };
-
-      const delta = BigNumber.from(10000);
-
-      expect(expectedBalances.requester.sub(balancesAfter.requester).abs()).to.be.lt(
-        delta,
-        "Invalid balance for requester"
-      );
-      expect(expectedBalances.translator.sub(balancesAfter.translator).abs()).to.be.lt(
-        delta,
-        "Invalid balance for translator"
-      );
-      expect(expectedBalances.challenger.sub(balancesAfter.challenger).abs()).to.be.lt(
-        delta,
-        "Invalid balance for challenger"
-      );
-    });
-
-    it("Should store the account contribution to the appeal funding", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const contributedAmount = loserAppealFee.div(10);
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-      await fundAppealHelper(taskID, contributedAmount, TaskParty.Translator, other);
-
-      const actualContributions = await contract.getContributions(taskID, await other.getAddress(), 0);
-
-      expect(actualContributions[TaskParty.Translator]).to.equal(contributedAmount, "Invalid contribution stored");
-    });
-  });
-
-  describe("Calculate withdrawable appeal fees and rewards", () => {
-    beforeEach("Assign task to translator, submit and challenge", async () => {
-      await assignTaskHelper(taskID);
-      await submitTranslationHelper(taskID, translatedText);
-      await challengeTranslationHelper(taskID, challengeEvidence);
-    });
-
-    it("Should calculate the proper amounts withdrawable by each party when the translation is approved", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-
-      const {appealFees} = await fundAppealAndResolveHelper(taskID, ruling);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-      };
-
-      const expectedAmounts = {
-        translator: appealFees[TaskParty.Translator].add(appealFees[TaskParty.Challenger]).sub(arbitrationFee),
-        challenger: BigNumber.from(0),
-      };
-
-      expect(actualAmounts.translator).to.equal(
-        expectedAmounts.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(actualAmounts.challenger).to.equal(
-        expectedAmounts.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-    });
-
-    it("Should calculate the proper amount withdrawable by each party when the translation is rejected", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-
-      const {appealFees} = await fundAppealAndResolveHelper(taskID, ruling);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-      };
-
-      const expectedAmounts = {
-        translator: BigNumber.from(0),
-        challenger: appealFees[TaskParty.Challenger].add(appealFees[TaskParty.Translator]).sub(arbitrationFee),
-      };
-
-      expect(actualAmounts.translator).to.equal(
-        expectedAmounts.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(actualAmounts.challenger).to.equal(
-        expectedAmounts.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-    });
-
-    it("Should calculate the proper amount withdrawable by each party when arbitrator refuses to rule", async () => {
-      const ruling = DisputeRuling.RefusedToRule;
-
-      const {appealFees} = await fundAppealAndResolveHelper(taskID, ruling);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-      };
-
-      const expectedAmounts = {
-        translator: appealFees[TaskParty.Translator].sub(arbitrationFee.div(2)),
-        challenger: appealFees[TaskParty.Challenger].sub(arbitrationFee.div(2)),
-      };
-
-      expect(actualAmounts.translator).to.equal(
-        expectedAmounts.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(actualAmounts.challenger).to.equal(
-        expectedAmounts.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-    });
-
-    it("Should calculate the proper amount withdrawable by each party when the appeal reverts the first round decision", async () => {
-      const firstRuling = DisputeRuling.TranslationApproved;
-      const finalRuling = DisputeRuling.TranslationRejected;
-
-      const {appealFees} = await fundAppealAndResolveHelper(taskID, firstRuling, finalRuling);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-      };
-
-      const expectedAmounts = {
-        translator: BigNumber.from(0),
-        challenger: appealFees[TaskParty.Challenger].add(appealFees[TaskParty.Translator]).sub(arbitrationFee),
-      };
-
-      expect(actualAmounts.translator).to.equal(
-        expectedAmounts.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(actualAmounts.challenger).to.equal(
-        expectedAmounts.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-    });
-  });
-
-  describe("Crowdfunding: calculate withdrawable appeal fees and rewards", () => {
-    beforeEach("Assign task to translator, submit and challenge", async () => {
-      await assignTaskHelper(taskID);
-      await submitTranslationHelper(taskID, translatedText);
-      await challengeTranslationHelper(taskID, challengeEvidence);
-    });
-
-    it("Should calculate the amount withdrawable by each crowdfunder proportional to their contribution when the translation is approved", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-
-      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, ruling);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder1.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder2.getAddress()),
-      };
-
-      const availableFeesAndRewards = appealFees[TaskParty.Translator]
-        .add(appealFees[TaskParty.Challenger])
-        .sub(arbitrationFee);
-
-      const expectedAmounts = {
-        translator: availableFeesAndRewards.div(BigNumber.from(2)),
-        crowdfunder1: availableFeesAndRewards.div(BigNumber.from(2)),
-        challenger: BigNumber.from(0),
-        crowdfunder2: BigNumber.from(0),
-      };
-
-      expect(actualAmounts.translator).to.equal(
-        expectedAmounts.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(actualAmounts.crowdfunder1).to.equal(
-        expectedAmounts.crowdfunder1,
-        "Invalid withdrawable amount for crowfunder supporting translator"
-      );
-      expect(actualAmounts.challenger).to.equal(
-        expectedAmounts.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-      expect(actualAmounts.crowdfunder2).to.equal(
-        expectedAmounts.crowdfunder2,
-        "Invalid withdrawable amount for crowfunder supporting challenger"
-      );
-    });
-
-    it("Should calculate the amount withdrawable by each crowdfunder proportioinal to their contribution when the translation is rejected", async () => {
-      const ruling = DisputeRuling.TranslationRejected;
-
-      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, ruling);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder1.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder2.getAddress()),
-      };
-
-      const availableFeesAndRewards = appealFees[TaskParty.Challenger]
-        .add(appealFees[TaskParty.Translator])
-        .sub(arbitrationFee);
-
-      const expectedAmounts = {
-        translator: BigNumber.from(0),
-        crowdfunder1: BigNumber.from(0),
-        challenger: availableFeesAndRewards.div(BigNumber.from(2)),
-        crowdfunder2: availableFeesAndRewards.div(BigNumber.from(2)),
-      };
-
-      expect(actualAmounts.translator).to.equal(
-        expectedAmounts.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(actualAmounts.crowdfunder1).to.equal(
-        expectedAmounts.crowdfunder1,
-        "Invalid withdrawable amount for crowfunder supporting translator"
-      );
-      expect(actualAmounts.challenger).to.equal(
-        expectedAmounts.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-      expect(actualAmounts.crowdfunder2).to.equal(
-        expectedAmounts.crowdfunder2,
-        "Invalid withdrawable amount for crowfunder supporting challenger"
-      );
-    });
-
-    it("Should calculate the amount withdrawable by each crowdfunder proportional to their contribution when arbitrator refuses to rule", async () => {
-      const ruling = DisputeRuling.RefusedToRule;
-
-      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, ruling);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder1.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder2.getAddress()),
-      };
-
-      const availableFeesAndRewards = {
-        translator: appealFees[TaskParty.Translator].sub(arbitrationFee.div(2)),
-        challenger: appealFees[TaskParty.Challenger].sub(arbitrationFee.div(2)),
-      };
-
-      const expectedAmounts = {
-        translator: availableFeesAndRewards.translator.div(2),
-        crowdfunder1: availableFeesAndRewards.translator.div(2),
-        challenger: availableFeesAndRewards.challenger.div(2),
-        crowdfunder2: availableFeesAndRewards.challenger.div(2),
-      };
-
-      expect(actualAmounts.translator).to.equal(
-        expectedAmounts.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(actualAmounts.crowdfunder1).to.equal(
-        expectedAmounts.crowdfunder1,
-        "Invalid withdrawable amount for crowfunder supporting translator"
-      );
-      expect(actualAmounts.challenger).to.equal(
-        expectedAmounts.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-      expect(actualAmounts.crowdfunder2).to.equal(
-        expectedAmounts.crowdfunder2,
-        "Invalid withdrawable amount for crowfunder supporting challenger"
-      );
-    });
-
-    it("Should calculate the amount withdrawable by each crowdfunder proportional to their contribution when the appeal reverts the first round decision", async () => {
-      const firstRuling = DisputeRuling.TranslationApproved;
-      const finalRuling = DisputeRuling.TranslationRejected;
-
-      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, firstRuling, finalRuling);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        crowdfunder1: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder1.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-        crowdfunder2: await contract.getTotalWithdrawableAmount(taskID, await crowdfunder2.getAddress()),
-      };
-
-      const availableFeesAndRewards = appealFees[TaskParty.Challenger]
-        .add(appealFees[TaskParty.Translator])
-        .sub(arbitrationFee);
-
-      const expectedAmounts = {
-        translator: BigNumber.from(0),
-        crowdfunder1: BigNumber.from(0),
-        challenger: availableFeesAndRewards.div(BigNumber.from(2)),
-        crowdfunder2: availableFeesAndRewards.div(BigNumber.from(2)),
-      };
-
-      expect(actualAmounts.translator).to.equal(
-        expectedAmounts.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(actualAmounts.crowdfunder1).to.equal(
-        expectedAmounts.crowdfunder1,
-        "Invalid withdrawable amount for crowfunder supporting translator"
-      );
-      expect(actualAmounts.challenger).to.equal(
-        expectedAmounts.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-      expect(actualAmounts.crowdfunder2).to.equal(
-        expectedAmounts.crowdfunder2,
-        "Invalid withdrawable amount for crowfunder supporting challenger"
-      );
-    });
-  });
-
-  describe("Batch withdraw fees and rewards", () => {
-    let challengedTask;
-
-    beforeEach("Assign task to translator, submit and challenge", async () => {
-      await assignTaskHelper(taskID);
-      await submitTranslationHelper(taskID, translatedText);
-      await challengeTranslationHelper(taskID, challengeEvidence);
-
-      challengedTask = await contract.getTask(taskID);
-    });
-
-    it("Should withdraw the full withdrawable amount for each party proportional to their contribution when the translation is approved", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-
-      const {appealFees} = await crowdfundAppealFeeAndResolveHelper(taskID, ruling);
-
-      const availableFeesAndRewards = appealFees[TaskParty.Translator]
-        .add(appealFees[TaskParty.Challenger])
-        .sub(arbitrationFee);
-
-      const balancesBefore = {
-        translator: await translator.getBalance(),
-        crowdfunder1: await crowdfunder1.getBalance(),
-        challenger: await challenger.getBalance(),
-        crowdfunder2: await crowdfunder2.getBalance(),
-      };
-
-      const expectedBalances = {
-        translator: balancesBefore.translator.add(availableFeesAndRewards.div(BigNumber.from(2))),
-        crowdfunder1: balancesBefore.crowdfunder1.add(availableFeesAndRewards.div(BigNumber.from(2))),
-        challenger: balancesBefore.challenger,
-        crowdfunder2: balancesBefore.crowdfunder2,
-      };
-
-      await batchWithdrawHelper(taskID, [
-        await translator.getAddress(),
-        await crowdfunder1.getAddress(),
-        await challenger.getAddress(),
-        await crowdfunder2.getAddress(),
-      ]);
-
-      const balancesAfter = {
-        translator: await translator.getBalance(),
-        crowdfunder1: await crowdfunder1.getBalance(),
-        challenger: await challenger.getBalance(),
-        crowdfunder2: await crowdfunder2.getBalance(),
-      };
-
-      expect(balancesAfter.translator).to.equal(
-        expectedBalances.translator,
-        "Invalid withdrawable amount for translator"
-      );
-      expect(balancesAfter.crowdfunder1).to.equal(
-        expectedBalances.crowdfunder1,
-        "Invalid withdrawable amount for crowdfunder1"
-      );
-      expect(balancesAfter.challenger).to.equal(
-        expectedBalances.challenger,
-        "Invalid withdrawable amount for challenger"
-      );
-      expect(balancesAfter.crowdfunder2).to.equal(
-        expectedBalances.crowdfunder2,
-        "Invalid withdrawable amount for crowdfunder2"
-      );
-    });
-
-    it("Should reimburse the contributed fees to each party when the appeal funding is not complete for both sides", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-      const loserParty = TaskParty.Challenger;
-      const winnerParty = TaskParty.Translator;
-
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
-
-      const loserContributedFee = loserAppealFee.sub(BigNumber.from(1));
-      const winnerContributedFee = winnerAppealFee.sub(BigNumber.from(1));
-
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-
-      await fundAppealHelper(taskID, loserContributedFee, loserParty, challenger);
-      await fundAppealHelper(taskID, winnerContributedFee, winnerParty, translator);
-
-      await increaseTime(appealTimeout + 1);
-      await giveRulingHelper(challengedTask.disputeID, ruling);
-
-      const balancesBefore = {
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-
-      await batchWithdrawHelper(taskID, [await translator.getAddress(), await challenger.getAddress()]);
-
-      const balancesAfter = {
-        translator: await translator.getBalance(),
-        challenger: await challenger.getBalance(),
-      };
-
-      const expectedBalances = {
-        translator: balancesBefore.translator.add(winnerContributedFee),
-        challenger: balancesBefore.challenger.add(loserContributedFee),
-      };
-
-      expect(balancesAfter.translator).to.equal(expectedBalances.translator, "Invalid balance for translator");
-      expect(balancesAfter.challenger).to.equal(expectedBalances.challenger, "Invalid balance for challenger");
-    });
-
-    it("Should zero out the withdrawable amount for the winner party after the withdraw is made", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-      await fundAppealAndResolveHelper(taskID, ruling);
-
-      await batchWithdrawHelper(taskID, [await translator.getAddress()]);
-      const actualWithdrawableAmount = await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress());
-
-      expect(actualWithdrawableAmount).to.equal(BigNumber.from(0), "Invalid balance after withdraw");
-    });
-
-    it("Should zero out the withdrawable amount for the both parties when there is no winner after both withdraw", async () => {
-      const ruling = DisputeRuling.RefusedToRule;
-      await fundAppealAndResolveHelper(taskID, ruling);
-
-      await batchWithdrawHelper(taskID, [await translator.getAddress(), await challenger.getAddress()]);
-
-      const actualAmounts = {
-        translator: await contract.getTotalWithdrawableAmount(taskID, await translator.getAddress()),
-        challenger: await contract.getTotalWithdrawableAmount(taskID, await challenger.getAddress()),
-      };
-
-      expect(actualAmounts.translator).to.equal(BigNumber.from(0), "Invalid translator balance after withdraw");
-      expect(actualAmounts.challenger).to.equal(BigNumber.from(0), "Invalid challenger balance after withdraw");
-    });
-
-    it("Should not allow the winner party to withdraw funds more than once for a given task", async () => {
-      const ruling = DisputeRuling.TranslationApproved;
-
-      const {appealFees} = await fundAppealAndResolveHelper(taskID, ruling);
-
-      const balanceBefore = await translator.getBalance();
-
-      await batchWithdrawHelper(taskID, [await translator.getAddress()]);
-
-      const balanceInBetween = await translator.getBalance();
-
-      await batchWithdrawHelper(taskID, [await translator.getAddress()]);
-
-      const balanceAfter = await translator.getBalance();
-
-      const expectedBalanceChange = appealFees[TaskParty.Translator]
-        .add(appealFees[TaskParty.Challenger])
-        .sub(arbitrationFee);
-
-      expect(balanceInBetween).to.equal(
-        balanceBefore.add(expectedBalanceChange),
-        "Invalid balance in between withdraws"
-      );
-      expect(balanceAfter).to.equal(balanceInBetween, "Double-spend detected");
-    });
-  });
-
-  async function submitTransaction(txPromise) {
-    const tx = await txPromise;
-    const receipt = await tx.wait();
-
-    return {txPromise, tx, receipt};
-  }
-
-  async function assignTaskHelper(taskID, signer = translator) {
-    const connectedContract = contract.connect(signer);
-
-    const requiredDeposit = await connectedContract.getTranslatorDeposit(taskID);
-    // Adds an amount that would be enough to cover difference in price due to time increase
-    const safeDeposit = requiredDeposit.add(BigNumber.from(String(1e17)));
-
-    const txPromise = connectedContract.assignTask(taskID, {value: safeDeposit});
-    return submitTransaction(txPromise);
-  }
-
-  async function submitTranslationHelper(taskID, translatedText, signer = translator) {
-    const connectedContract = contract.connect(signer);
-
-    const txPromise = connectedContract.submitTranslation(taskID, translatedText);
-    return submitTransaction(txPromise);
-  }
-
-  async function reimburseRequesterHelper(taskID, signer = translator) {
-    const connectedContract = contract.connect(signer);
-    await increaseTime(submissionTimeout + 3600);
-
-    const txPromise = connectedContract.reimburseRequester(taskID);
-    return submitTransaction(txPromise);
-  }
-
-  async function acceptTranslationHelper(taskID, signer = requester) {
-    const connectedContract = contract.connect(signer);
-    await increaseTime(reviewTimeout + 1);
-
-    const txPromise = connectedContract.acceptTranslation(taskID);
-    return submitTransaction(txPromise);
-  }
-
-  async function challengeTranslationHelper(taskID, evidence, signer = challenger) {
-    const connectedContract = contract.connect(signer);
-    const requiredDeposit = await connectedContract.getChallengerDeposit(taskID);
-
-    const txPromise = connectedContract.challengeTranslation(taskID, evidence, {value: requiredDeposit});
-    return submitTransaction(txPromise);
-  }
-
-  async function fundAppealHelper(
-    taskID,
-    value,
-    side,
-    signer = side === TaskParty.Translator ? translator : challenger
-  ) {
-    const connectedContract = contract.connect(signer);
-    const txPromise = connectedContract.fundAppeal(taskID, side, {value});
-    const tx = await txPromise;
-    const receipt = await tx.wait();
-
-    return {txPromise, tx, receipt};
-  }
-
-  async function giveRulingHelper(disputeID, ruling) {
-    const txPromise = arbitrator.giveRuling(disputeID, ruling);
-    const tx = await txPromise;
-    const receipt = await tx.wait();
-
-    return {txPromise, tx, receipt};
-  }
-
-  async function giveFinalRulingHelper(disputeID, ruling) {
-    const firstTx = await arbitrator.giveRuling(disputeID, ruling);
-    await firstTx.wait();
-
-    await increaseTime(appealTimeout + 1);
-
-    const txPromise = arbitrator.giveRuling(disputeID, ruling);
-    const tx = await txPromise;
-    const receipt = await tx.wait();
-
-    return {txPromise, tx, receipt};
-  }
-
-  async function fundAppealAndResolveHelper(taskID, firstRuling, appealRuling = firstRuling) {
-    const appealFees = {};
-    const task = await contract.getTask(taskID);
-    await giveRulingHelper(task.disputeID, firstRuling);
-
-    if (firstRuling === DisputeRuling.RefusedToRule) {
-      const appealFee = arbitrationFee.add(arbitrationFee.mul(sharedMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await fundAppealHelper(taskID, appealFee, TaskParty.Translator);
-      await fundAppealHelper(taskID, appealFee, TaskParty.Challenger);
-
-      appealFees[TaskParty.Translator] = appealFee;
-      appealFees[TaskParty.Challenger] = appealFee;
-    } else {
-      const loserParty =
-        firstRuling === DisputeRuling.TranslationRejected ? TaskParty.Translator : TaskParty.Challenger;
-      const winnerParty =
-        firstRuling === DisputeRuling.TranslationApproved ? TaskParty.Translator : TaskParty.Challenger;
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
-
-      await fundAppealHelper(taskID, loserAppealFee, loserParty);
-      await fundAppealHelper(taskID, winnerAppealFee, winnerParty);
-
-      appealFees[TaskParty.Translator] =
-        firstRuling === DisputeRuling.TranslationRejected ? loserAppealFee : winnerAppealFee;
-      appealFees[TaskParty.Challenger] =
-        firstRuling === DisputeRuling.TranslationApproved ? loserAppealFee : winnerAppealFee;
-    }
-
-    const appealDisputeID = await arbitrator.getAppealDisputeID(task.disputeID);
-    return {...(await giveFinalRulingHelper(appealDisputeID, appealRuling)), appealFees};
-  }
-
-  /**
-   * Advances past the whole appeal process with croundfunding.
-   * Translator fees are split 50/50 paid by translator and crowdfunder1
-   * Challenger fees are split 50/50 paid by challenger and crowdfunder2
-   */
-  async function crowdfundAppealFeeAndResolveHelper(taskID, firstRuling, appealRuling = firstRuling) {
-    const appealFees = {};
-    const task = await contract.getTask(taskID);
-    await giveRulingHelper(task.disputeID, firstRuling);
-
-    if (firstRuling === DisputeRuling.RefusedToRule) {
-      const appealFee = arbitrationFee.add(arbitrationFee.mul(sharedMultiplier).div(MULTIPLIER_DIVISOR));
-      const paidFee = appealFee.div(BigNumber.from(2));
-
-      await fundAppealHelper(taskID, paidFee, TaskParty.Translator, translator);
-      await fundAppealHelper(taskID, paidFee, TaskParty.Translator, crowdfunder1);
-      await fundAppealHelper(taskID, paidFee, TaskParty.Challenger, challenger);
-      await fundAppealHelper(taskID, paidFee, TaskParty.Challenger, crowdfunder2);
-
-      appealFees[TaskParty.Translator] = appealFee;
-      appealFees[TaskParty.Challenger] = appealFee;
-    } else {
-      const translatorSide = {
-        signer: translator,
-        crowdfunder: crowdfunder1,
-        party: TaskParty.Translator,
-      };
-
-      const challengerSide = {
-        signer: challenger,
-        crowdfunder: crowdfunder2,
-        party: TaskParty.Challenger,
-      };
-
-      const loserSide = firstRuling === DisputeRuling.TranslationApproved ? challengerSide : translatorSide;
-      const winnerSide = firstRuling === DisputeRuling.TranslationRejected ? challengerSide : translatorSide;
-
-      const loserAppealFee = arbitrationFee.add(arbitrationFee.mul(loserMultiplier).div(MULTIPLIER_DIVISOR));
-      const winnerAppealFee = arbitrationFee.add(arbitrationFee.mul(winnerMultiplier).div(MULTIPLIER_DIVISOR));
-      const paidLoserAppealFee = loserAppealFee.div(BigNumber.from(2));
-      const paidWinnerAppealFee = winnerAppealFee.div(BigNumber.from(2));
-
-      await fundAppealHelper(taskID, paidLoserAppealFee, loserSide.party, loserSide.signer);
-      await fundAppealHelper(taskID, paidLoserAppealFee, loserSide.party, loserSide.crowdfunder);
-      await fundAppealHelper(taskID, paidWinnerAppealFee, winnerSide.party, winnerSide.signer);
-      await fundAppealHelper(taskID, paidWinnerAppealFee, winnerSide.party, winnerSide.crowdfunder);
-
-      appealFees[loserSide.party] = loserAppealFee;
-      appealFees[winnerSide.party] = winnerAppealFee;
-    }
-
-    const appealDisputeID = await arbitrator.getAppealDisputeID(task.disputeID);
-
-    return {...(await giveFinalRulingHelper(appealDisputeID, appealRuling)), appealFees};
-  }
-
-  async function batchWithdrawHelper(taskID, addresses = []) {
-    const txs = await Promise.all(
-      addresses.map((address) => contract.batchWithdrawFeesAndRewards(taskID, address, 0, 0))
+  it("Should set the correct values in newly created task and fire an event", async () => {
+    const task = await linguo.tasks(0);
+    // An error up to 0.1% is allowed because of time fluctuation
+    assert(
+      Math.abs(submissionTimeout - task[0].toNumber()) <= submissionTimeout / 1000,
+      "The submissionTimeout is not set up properly"
     );
-    return Promise.all(txs.map((tx) => tx.wait()));
-  }
+    assert.equal(task[1].toNumber(), taskMinPrice, "The min price is not set up properly");
+    assert.equal(task[2].toNumber(), taskMaxPrice, "The max price is not set up properly");
+
+    assert.equal(task[3].toNumber(), 0, "The task status is not set up properly");
+    assert.equal(task[5], requester, "The requester is not set up properly");
+    assert.equal(task[6].toNumber(), taskMaxPrice, "The requester deposit is not set up properly");
+
+    assert.equal(taskTx.logs[0].event, "MetaEvidence", "The event has not been created");
+    assert.equal(taskTx.logs[0].args._metaEvidenceID.toNumber(), 0, "The event has wrong task ID");
+    assert.equal(taskTx.logs[0].args._evidence, "TestMetaEvidence", "The event has wrong meta-evidence string");
+
+    assert.equal(taskTx.logs[1].event, "TaskCreated", "The second event has not been created");
+    assert.equal(taskTx.logs[1].args._taskID.toNumber(), 0, "The second event has wrong task ID");
+    assert.equal(taskTx.logs[1].args._requester, requester, "The second event has wrong requester address");
+  });
+
+  it("Should not be possible to deposit less than min price when creating a task", async () => {
+    currentTime = await latestTime();
+    // Invert max and min price to make sure it throws when less than min price is deposited.
+    await expectThrow(
+      linguo.createTask(currentTime + submissionTimeout, taskMaxPrice, "TestMetaEvidence", {
+        from: requester,
+        value: taskMinPrice,
+      })
+    );
+  });
+
+  it("Should return correct task price and assignment deposit value before submission timeout ended", async () => {
+    const priceLinguo = Number(await linguo.getTaskPrice(0));
+    let price = Math.floor(taskMinPrice + ((taskMaxPrice - taskMinPrice) * secondsPassed) / submissionTimeout);
+    // an error up to 1% is allowed because of time fluctuation
+    assert(Math.abs(priceLinguo - price) <= price / 100, "Contract returns incorrect task price");
+
+    price = Math.floor(taskMinPrice + ((taskMaxPrice - taskMinPrice) * secondsPassed) / submissionTimeout);
+    const deposit = arbitrationFee + (translationMultiplier * price) / MULTIPLIER_DIVISOR;
+    const depositLinguo = await linguo.getDepositValue(0);
+    assert(
+      Math.abs(depositLinguo.toNumber() - deposit) <= deposit / 100,
+      "Contract returns incorrect required deposit"
+    );
+  });
+
+  it("Should return correct task price and assignment deposit value after submission timeout ended", async () => {
+    await increaseTime(submissionTimeout + 1);
+    const priceLinguo = Number(await linguo.getTaskPrice(0));
+    assert.equal(priceLinguo, 0, "Contract returns incorrect task price after submission timeout ended");
+    const deposit = String(NOT_PAYABLE_VALUE);
+    const depositLinguo = String(await linguo.getDepositValue(0));
+    assert.equal(depositLinguo, deposit, "Contract returns incorrect required deposit after submission timeout ended");
+  });
+
+  it("Should return correct task price and assignment deposit when status is not `created`", async () => {
+    const requiredDeposit = Number(await linguo.getDepositValue(0));
+    await linguo.assignTask(0, {
+      from: translator,
+      value: String(requiredDeposit + 1e11),
+    });
+
+    const expectedTaskPrice = 0;
+    const actualTaskPrice = await linguo.getTaskPrice(0);
+    assert.equal(
+      actualTaskPrice,
+      expectedTaskPrice,
+      "Contract returns incorrect task price if status is not `created`"
+    );
+
+    const expectedDeposit = String(NOT_PAYABLE_VALUE);
+    const actualDeposit = String(await linguo.getDepositValue(0));
+    assert.equal(
+      actualDeposit,
+      expectedDeposit,
+      "Contract returns incorrect required deposit if status is not `created`"
+    );
+  });
+
+  it("Should not be possible to pay less than required deposit value", async () => {
+    const requiredDeposit = Number(await linguo.getDepositValue(0));
+    await expectThrow(
+      linguo.assignTask(0, {
+        from: translator,
+        value: String(requiredDeposit - 1000),
+      })
+    );
+  });
+
+  it("Should emit TaskAssigned event after assigning to the task", async () => {
+    const requiredDeposit = Number(await linguo.getDepositValue(0));
+    const assignTx = await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+
+    assert.equal(assignTx.logs[0].event, "TaskAssigned", "The TaskAssigned event was not emitted");
+  });
+
+  it("Should reimburse requester leftover price after assigning the task and set correct values", async () => {
+    const oldBalance = web3.utils.toBN(await web3.eth.getBalance(requester));
+
+    const requiredDeposit = Number(await linguo.getDepositValue(0));
+
+    // Add a surplus of 0.1 ETH to the required deposit to account for the difference between the time transaction was created and mined.
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+
+    const newBalance = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const taskInfo = await linguo.getTaskParties(0);
+    const task = await linguo.tasks(0);
+
+    assert(
+      newBalance.eq(oldBalance.add(web3.utils.toBN(taskMaxPrice)).sub(task[6])),
+      "The requester was not reimbursed correctly"
+    );
+    assert.equal(taskInfo[1], translator, "The translator was not set up properly");
+    // an error up to 1% is allowed because of time fluctuation
+    assert(
+      Math.abs(task[7].toNumber() - requiredDeposit) <= requiredDeposit / 100,
+      "The translator deposit was not set up properly"
+    );
+  });
+
+  it("Should not be possible to submit translation after submission timeout ended", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await increaseTime(submissionTimeout - secondsPassed + 1);
+    await expectThrow(
+      linguo.submitTranslation(0, "ipfs:/X", {
+        from: translator,
+      })
+    );
+  });
+
+  it("Only an assigned translator should be allowed to submit translation to a task", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await expectThrow(
+      linguo.submitTranslation(0, "ipfs:/X", {
+        from: other,
+      })
+    );
+  });
+
+  it("Should fire an event after translation is submitted", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    submissionTx = await linguo.submitTranslation(0, "ipfs:/X", {
+      from: translator,
+    });
+    assert.equal(submissionTx.logs[0].event, "TranslationSubmitted", "The event has not been created");
+    assert.equal(submissionTx.logs[0].args._taskID.toNumber(), 0, "The event has wrong task ID");
+    assert.equal(submissionTx.logs[0].args._translator, translator, "The event has wrong translator address");
+    assert.equal(
+      submissionTx.logs[0].args._translatedText,
+      "ipfs:/X",
+      "The event has wrong link to the translated text"
+    );
+  });
+
+  it("Should reimburse requester if no one picked the task before submission timeout ended", async () => {
+    await increaseTime(submissionTimeout + 1);
+    const oldBalance = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const reimburseTx = await linguo.reimburseRequester(0);
+    const newBalance = web3.utils.toBN(await web3.eth.getBalance(requester));
+
+    assert.equal(reimburseTx.logs[0].event, "TaskResolved", "TaskResolved event was not emitted");
+    assert.equal(
+      newBalance.toString(),
+      oldBalance.add(web3.utils.toBN(String(taskMaxPrice))).toString(),
+      "The requester was not reimbursed correctly"
+    );
+  });
+
+  it("Should reimburse requester if translator failed to submit translation before submission timeout ended", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await increaseTime(submissionTimeout + 1);
+    const oldBalance = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const task = await linguo.tasks(0);
+    await linguo.reimburseRequester(0);
+    const newBalance = web3.utils.toBN(await web3.eth.getBalance(requester));
+    // task price + translator's deposit should go to requester
+    assert.equal(
+      newBalance.toString(),
+      oldBalance.add(task[6]).add(task[7]).toString(),
+      "The requester was not reimbursed correctly"
+    );
+  });
+
+  it("Should not be possible to reimburse if submission timeout has not passed", async () => {
+    await increaseTime(submissionTimeout - secondsPassed - 100);
+    await expectThrow(linguo.reimburseRequester(0));
+  });
+
+  it("Should accept the translation and pay the translator if review timeout has passed without challenge", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await increaseTime(reviewTimeout + 1);
+    const task = await linguo.tasks(0);
+
+    const oldBalance = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const acceptTx = await linguo.acceptTranslation(0);
+    const newBalance = web3.utils.toBN(await web3.eth.getBalance(translator));
+
+    assert.equal(acceptTx.logs[0].event, "TaskResolved", "TaskResolved event was not emitted");
+
+    assert.equal(
+      newBalance.toString(),
+      oldBalance.add(task[6]).add(task[7]).toString(),
+      "The translator was not paid correctly"
+    );
+  });
+
+  it("Should not be possible to accept translation if review timeout has not passed or if it was challenged", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await expectThrow(linguo.acceptTranslation(0));
+
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+    await increaseTime(reviewTimeout + 1);
+    await expectThrow(linguo.acceptTranslation(0));
+  });
+
+  it("Should set correct values in contract and in dispute and emit TranslationChallenged event after task has been challenged", async () => {
+    let task;
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    task = await linguo.tasks(0);
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    const challengeTx = await linguo.challengeTranslation(0, "ChallengeEvidence", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+
+    assert.equal(challengeTx.logs[1].event, "TranslationChallenged", "TranslationChallenged event was not emitted");
+
+    assert.equal(challengeTx.logs[2].event, "Evidence", "Evidence event was not emitted");
+
+    assert.equal(challengeTx.logs[2].args._arbitrator, arbitrator.address, "The Evidence event has wrong arbitrator");
+
+    assert.equal(
+      challengeTx.logs[2].args._evidenceGroupID.toNumber(),
+      0,
+      "The Evidence event has wrong evidenceGroupID"
+    );
+
+    assert.equal(challengeTx.logs[2].args._party, challenger, "The Evidence event has wrong party address");
+
+    assert.equal(
+      challengeTx.logs[2].args._evidence,
+      "ChallengeEvidence",
+      "The Evidence event has wrong evidence string"
+    );
+
+    // get task info again because of updated values
+    task = await linguo.tasks(0);
+    const taskInfo = await linguo.getTaskParties(0);
+    assert.equal(taskInfo[2], challenger, "The challenger was not set up properly");
+
+    const sumDeposit = requiredDeposit + challengerDeposit - arbitrationFee - 1000;
+    // an error up to 0.1% is allowed
+    assert(
+      Math.abs(task[7].toNumber() - sumDeposit) <= sumDeposit / 1000,
+      "The sum of translator and challenger deposits was not set up properly"
+    );
+
+    const dispute = await arbitrator.disputes(0);
+    assert.equal(dispute[0], linguo.address, "Arbitrable not set up properly");
+    assert.equal(dispute[1].toNumber(), 2, "Number of choices not set up properly");
+    assert.equal(dispute[2].toNumber(), 1e12, "Arbitration fee not set up properly");
+  });
+
+  it("Should not allow to challenge if review timeout has passed", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    await increaseTime(reviewTimeout + 1);
+    const task = await linguo.tasks(0);
+    const price = task[6].toNumber();
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = Math.floor(arbitrationFee + (challengeMultiplier * price) / MULTIPLIER_DIVISOR + 1000);
+    await expectThrow(
+      linguo.challengeTranslation(0, "", {
+        from: challenger,
+        value: challengerDeposit,
+      })
+    );
+  });
+
+  it("Should paid to all parties correctly when arbitrator refused to rule", async () => {
+    let task;
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    task = await linguo.tasks(0);
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+
+    // Get the task info again to get updated sumDeposit value.
+    task = await linguo.tasks(0);
+
+    const oldBalance1 = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const oldBalance2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const oldBalance3 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+
+    await arbitrator.giveRuling(0, 0);
+    await increaseTime(appealTimeOut + 1);
+    await arbitrator.giveRuling(0, 0);
+
+    const newBalance1 = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const newBalance2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const newBalance3 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+
+    assert.equal(newBalance1.toString(), oldBalance1.add(task[6]).toString(), "The requester was not paid correctly");
+    // Check in proximity because division by 2 can sometimes return floating point which is not supported by solidity thus requiring conversion toNumber() which can have small aberration.
+    const balance2 = Number(oldBalance2.add(task[7].div(web3.utils.toBN(2))));
+    assert(
+      Math.abs(balance2 - Number(newBalance2)) <= Number(newBalance2) / 10000,
+      "The translator was not paid correctly"
+    );
+
+    const balance3 = Number(oldBalance3.add(task[7].div(web3.utils.toBN(2))));
+    assert(
+      Math.abs(balance3 - Number(newBalance3)) <= Number(newBalance3) / 10000,
+      "The challenger was not paid correctly"
+    );
+
+    task = await linguo.tasks(0);
+    assert.equal(Number(task[9]), 0, "The ruling of the task is incorrect");
+  });
+
+  it("Should paid to all parties correctly if translator wins", async () => {
+    let task;
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+
+    // Get the task info again to get updated sumDeposit value.
+    task = await linguo.tasks(0);
+
+    const oldBalance1 = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const oldBalance2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const oldBalance3 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+
+    await arbitrator.giveRuling(0, 1);
+    await increaseTime(appealTimeOut + 1);
+    await arbitrator.giveRuling(0, 1);
+
+    const newBalance1 = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const newBalance2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const newBalance3 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+
+    assert.equal(newBalance1.toString(), oldBalance1.toString(), "Requester has incorrect balance");
+    assert.equal(
+      newBalance2.toString(),
+      oldBalance2.add(task[6]).add(task[7]).toString(),
+      "The translator was not paid correctly"
+    );
+    assert.equal(newBalance3.toString(), oldBalance3.toString(), "Challenger has incorrect balance");
+
+    task = await linguo.tasks(0);
+    assert.equal(task[9].toNumber(), 1, "The ruling of the task is incorrect");
+  });
+
+  it("Should paid to all parties correctly if challenger wins", async () => {
+    let task;
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    task = await linguo.tasks(0);
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+
+    // Get the task info again to get updated sumDeposit value.
+    task = await linguo.tasks(0);
+
+    const oldBalance1 = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const oldBalance2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const oldBalance3 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+
+    await arbitrator.giveRuling(0, 2);
+    await increaseTime(appealTimeOut + 1);
+    await arbitrator.giveRuling(0, 2);
+
+    const newBalance1 = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const newBalance2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const newBalance3 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+
+    assert.equal(newBalance1.toString(), oldBalance1.add(task[6]).toString(), "The requester was not paid correctly");
+    assert.equal(newBalance2.toString(), oldBalance2.toString(), "Translator has incorrect balance");
+    assert.equal(newBalance3.toString(), oldBalance3.add(task[7]).toString(), "The challenger was not paid correctly");
+
+    task = await linguo.tasks(0);
+    assert.equal(task[9].toNumber(), 2, "The ruling of the task is incorrect");
+  });
+
+  it("Should demand correct appeal fees and register that appeal fee has been paid", async () => {
+    let roundInfo;
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+    // in  that case translator is loser and challenger is winner
+    await arbitrator.giveRuling(0, 2);
+    // appeal fee is the same as arbitration fee for this arbitrator
+    const loserAppealFee = arbitrationFee + (arbitrationFee * loserMultiplier) / MULTIPLIER_DIVISOR;
+
+    const fundTx = await linguo.fundAppeal(0, 1, {
+      from: translator,
+      value: 3e12, // Deliberately overpay to check that only required fee amount will be registered.
+    });
+
+    // Check that event is emitted when fees are paid.
+    assert.equal(fundTx.logs[1].event, "HasPaidAppealFee", "The event has not been created");
+    assert.equal(fundTx.logs[1].args._taskID.toNumber(), 0, "The event has wrong task ID");
+    assert.equal(fundTx.logs[1].args._party.toNumber(), 1, "The event has wrong party");
+
+    roundInfo = await linguo.getRoundInfo(0, 0);
+
+    assert.equal(roundInfo[0][1].toNumber(), loserAppealFee, "Registered fee of translator is incorrect");
+    assert.equal(roundInfo[1][1], true, "Did not register that translator successfully paid his fees");
+
+    assert.equal(roundInfo[0][2].toNumber(), 0, "Should not register any payments for challenger");
+    assert.equal(roundInfo[1][2], false, "Should not register that challenger successfully paid fees");
+
+    // Check that it's not possible to fund appeal after funding has been registered.
+    await expectThrow(linguo.fundAppeal(0, 1, {from: translator, value: loserAppealFee}));
+
+    const winnerAppealFee = arbitrationFee + (arbitrationFee * winnerMultiplier) / MULTIPLIER_DIVISOR;
+
+    // increase time to make sure winner can pay in 2nd half
+    await increaseTime(appealTimeOut / 2 + 1);
+    await linguo.fundAppeal(0, 2, {
+      from: challenger,
+      value: 3e12, // Deliberately overpay to check that only required fee amount will be registered.
+    });
+
+    roundInfo = await linguo.getRoundInfo(0, 0);
+
+    assert.equal(roundInfo[0][2].toNumber(), winnerAppealFee, "Registered fee of challenger is incorrect");
+    assert.equal(roundInfo[1][2], true, "Did not register that challenger successfully paid his fees");
+
+    assert.equal(
+      roundInfo[2].toNumber(),
+      winnerAppealFee + loserAppealFee - arbitrationFee,
+      "Incorrect fee rewards value"
+    );
+
+    // If both sides pay their fees it starts new appeal round. Check that both sides have their value set to default.
+    roundInfo = await linguo.getRoundInfo(0, 1);
+    assert.equal(roundInfo[1][1], false, "Appeal fee payment for translator should not be registered");
+    assert.equal(roundInfo[1][2], false, "Appeal fee payment for challenger should not be registered");
+  });
+
+  it("Should not be possible for loser to fund appeal if first half of appeal period has passed", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    // DEL: const task = await linguo.tasks(0)
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+    await arbitrator.giveRuling(0, 1);
+    const loserAppealFee = arbitrationFee + (arbitrationFee * loserMultiplier) / MULTIPLIER_DIVISOR;
+    await increaseTime(appealTimeOut / 2 + 1);
+    await expectThrow(linguo.fundAppeal(0, 2, {from: challenger, value: loserAppealFee}));
+  });
+
+  it("Should not be possible for winner to fund appeal if appeal period has passed", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    // DEL: const task = await linguo.tasks(0)
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+    await arbitrator.giveRuling(0, 1);
+
+    const winnerAppealFee = arbitrationFee + (arbitrationFee * winnerMultiplier) / MULTIPLIER_DIVISOR;
+    await increaseTime(appealTimeOut + 1);
+    await expectThrow(linguo.fundAppeal(0, 1, {from: translator, value: winnerAppealFee}));
+  });
+
+  it("Should change the ruling if loser paid appeal fee while winner did not", async () => {
+    let task;
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    task = await linguo.tasks(0);
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+    // Get the task info again to get updated sumDeposit value.
+    task = await linguo.tasks(0);
+
+    await arbitrator.giveRuling(0, 2);
+
+    const loserAppealFee = arbitrationFee + (arbitrationFee * loserMultiplier) / MULTIPLIER_DIVISOR;
+    await linguo.fundAppeal(0, 1, {
+      from: translator,
+      value: loserAppealFee,
+    });
+    await increaseTime(appealTimeOut + 1);
+
+    const oldBalance1 = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const oldBalance2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const oldBalance3 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+
+    await arbitrator.giveRuling(0, 2);
+
+    const newBalance1 = web3.utils.toBN(await web3.eth.getBalance(requester));
+    const newBalance2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    const newBalance3 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+
+    // translator's balance should increase while other's stay the same despite ruling being in favor of challenger
+    assert.equal(newBalance1.toString(), oldBalance1.toString(), "Requester has incorrect balance");
+    assert.equal(
+      newBalance2.toString(),
+      oldBalance2.add(task[6]).add(task[7]).toString(),
+      "The translator was not paid correctly"
+    );
+    assert.equal(newBalance3.toString(), oldBalance3.toString(), "Challenger has incorrect balance");
+
+    task = await linguo.tasks(0);
+    assert.equal(task[9].toNumber(), 1, "The ruling of the task is incorrect");
+  });
+
+  it("Should withdraw correct fees if dispute had winner/loser", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    // DEL: const task = await linguo.tasks(0)
+
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+
+    await arbitrator.giveRuling(0, 2);
+
+    const loserAppealFee = arbitrationFee + (arbitrationFee * loserMultiplier) / MULTIPLIER_DIVISOR;
+
+    await linguo.fundAppeal(0, 1, {
+      from: other,
+      value: loserAppealFee * 0.75,
+    });
+
+    await linguo.fundAppeal(0, 1, {
+      from: translator,
+      value: 2e12,
+    });
+
+    const winnerAppealFee = arbitrationFee + (arbitrationFee * winnerMultiplier) / MULTIPLIER_DIVISOR;
+
+    await linguo.fundAppeal(0, 2, {
+      from: other,
+      value: 0.2 * winnerAppealFee,
+    });
+
+    await linguo.fundAppeal(0, 2, {
+      from: challenger,
+      value: winnerAppealFee,
+    });
+
+    const roundInfo = await linguo.getRoundInfo(0, 0);
+
+    await arbitrator.giveRuling(1, 2);
+
+    await linguo.fundAppeal(0, 1, {
+      from: translator,
+      value: 1e11, // Deliberately underpay to check that in can be reimbursed later.
+    });
+
+    await increaseTime(appealTimeOut + 1);
+    await arbitrator.giveRuling(1, 2);
+
+    const oldBalance1 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    await linguo.withdrawFeesAndRewards(translator, 0, 0, {
+      from: governor,
+    });
+    let newBalance1 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    assert.equal(
+      newBalance1.toString(),
+      oldBalance1.toString(),
+      "Translator balance should stay the same after withdrawing from 0 round"
+    );
+    await linguo.withdrawFeesAndRewards(translator, 0, 1, {
+      from: governor,
+    });
+    newBalance1 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    assert.equal(
+      newBalance1.toString(),
+      oldBalance1.add(web3.utils.toBN(1e11)).toString(),
+      "Translator should be reimbursed unsuccessful payment"
+    );
+
+    const oldBalance2 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+    await linguo.withdrawFeesAndRewards(challenger, 0, 0, {
+      from: governor,
+    });
+    const newBalance2 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+    assert.equal(
+      newBalance2.toString(),
+      oldBalance2.add(web3.utils.toBN(Math.floor(0.8 * roundInfo[2]))).toString(),
+      "Incorrect balance of the challenger after withdrawing"
+    );
+
+    const oldBalance3 = web3.utils.toBN(await web3.eth.getBalance(other));
+    await linguo.withdrawFeesAndRewards(other, 0, 0, {
+      from: governor,
+    });
+    const newBalance3 = web3.utils.toBN(await web3.eth.getBalance(other));
+    assert.equal(
+      newBalance3.toString(),
+      oldBalance3.add(web3.utils.toBN(Math.floor(0.2 * roundInfo[2]))).toString(),
+      "Incorrect balance of the crowdfunder after withdrawing"
+    );
+  });
+
+  it("Should withdraw correct fees if arbitrator refused to arbitrate", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    // DEL: const task = await linguo.tasks(0)
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+
+    await arbitrator.giveRuling(0, 0);
+
+    const sharedAppealFee = arbitrationFee + (arbitrationFee * sharedMultiplier) / MULTIPLIER_DIVISOR;
+
+    await linguo.fundAppeal(0, 1, {
+      from: other,
+      value: 0.4 * sharedAppealFee,
+    });
+
+    await linguo.fundAppeal(0, 1, {
+      from: translator,
+      value: 2e12,
+    });
+
+    await linguo.fundAppeal(0, 2, {
+      from: other,
+      value: 0.2 * sharedAppealFee,
+    });
+
+    await linguo.fundAppeal(0, 2, {
+      from: challenger,
+      value: sharedAppealFee,
+    });
+
+    const roundInfo = await linguo.getRoundInfo(0, 0);
+
+    await arbitrator.giveRuling(1, 0);
+    await increaseTime(appealTimeOut + 1);
+    await arbitrator.giveRuling(1, 0);
+
+    const oldBalance1 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    await linguo.withdrawFeesAndRewards(translator, 0, 0, {
+      from: governor,
+    });
+    const newBalance1 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    assert.equal(
+      newBalance1.toString(),
+      oldBalance1.add(web3.utils.toBN(Math.floor(0.3 * roundInfo[2]))).toString(),
+      "Incorrect translator balance after withdrawing"
+    );
+
+    const oldBalance2 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+    await linguo.withdrawFeesAndRewards(challenger, 0, 0, {
+      from: governor,
+    });
+    const newBalance2 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+    assert.equal(
+      newBalance2.toString(),
+      oldBalance2.add(web3.utils.toBN(Math.floor(0.4 * roundInfo[2]))).toString(),
+      "Incorrect balance of the challenger after withdrawing"
+    );
+
+    const oldBalance3 = web3.utils.toBN(await web3.eth.getBalance(other));
+    await linguo.withdrawFeesAndRewards(other, 0, 0, {
+      from: governor,
+    });
+    const newBalance3 = web3.utils.toBN(await web3.eth.getBalance(other));
+    assert.equal(
+      newBalance3.toString(),
+      oldBalance3.add(web3.utils.toBN(Math.floor(0.3 * roundInfo[2]))).toString(),
+      "Incorrect balance of the crowdfunder after withdrawing"
+    );
+  });
+
+  it("Should correctly perform batch withdraw", async () => {
+    const requiredDeposit = (await linguo.getDepositValue(0)).toNumber();
+
+    await linguo.assignTask(0, {
+      from: translator,
+      value: requiredDeposit + 1e11,
+    });
+    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+
+    // DEL: const task = await linguo.tasks(0)
+    // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
+    const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
+    await linguo.challengeTranslation(0, "", {
+      from: challenger,
+      value: challengerDeposit,
+    });
+
+    await arbitrator.giveRuling(0, 1);
+
+    const loserAppealFee = arbitrationFee + (arbitrationFee * loserMultiplier) / MULTIPLIER_DIVISOR;
+
+    await linguo.fundAppeal(0, 2, {
+      from: challenger,
+      value: loserAppealFee,
+    });
+
+    const winnerAppealFee = arbitrationFee + (arbitrationFee * winnerMultiplier) / MULTIPLIER_DIVISOR;
+
+    await linguo.fundAppeal(0, 1, {
+      from: translator,
+      value: winnerAppealFee,
+    });
+    const roundInfo = await linguo.getRoundInfo(0, 0);
+
+    await arbitrator.giveRuling(1, 1);
+
+    await linguo.fundAppeal(0, 2, {
+      from: challenger,
+      value: loserAppealFee,
+    });
+
+    await linguo.fundAppeal(0, 1, {
+      from: translator,
+      value: winnerAppealFee,
+    });
+
+    await arbitrator.giveRuling(2, 1);
+
+    await linguo.fundAppeal(0, 2, {
+      from: challenger,
+      value: 0.5 * loserAppealFee,
+    });
+
+    await linguo.fundAppeal(0, 1, {
+      from: translator,
+      value: 0.5 * winnerAppealFee,
+    });
+
+    await increaseTime(appealTimeOut + 1);
+    await arbitrator.giveRuling(2, 1);
+
+    const amountTranslator = await linguo.amountWithdrawable(0, translator);
+    const amountChallenger = await linguo.amountWithdrawable(0, challenger);
+
+    const oldBalanceTranslator = web3.utils.toBN(await web3.eth.getBalance(translator));
+    await linguo.batchRoundWithdraw(translator, 0, 1, 12, {
+      from: governor,
+    });
+    const newBalanceTranslator1 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    assert.equal(
+      newBalanceTranslator1.toString(),
+      oldBalanceTranslator
+        .add(web3.utils.toBN(Math.floor(roundInfo[2])))
+        .add(web3.utils.toBN(Math.floor(0.5 * winnerAppealFee)))
+        .toString(), // The last round was only paid half of the required amount.
+      "Incorrect translator balance after withdrawing from last 2 rounds"
+    );
+    await linguo.batchRoundWithdraw(translator, 0, 0, 1, {
+      from: governor,
+    });
+
+    const newBalanceTranslator2 = web3.utils.toBN(await web3.eth.getBalance(translator));
+    assert.equal(
+      newBalanceTranslator2.toString(),
+      newBalanceTranslator1.add(web3.utils.toBN(Math.floor(roundInfo[2]))).toString(), // First 2 rounds have the same feeRewards value so we don't need to get info directly from each round.
+      "Incorrect translator balance after withdrawing from the first round"
+    );
+
+    // Check that 'amountWithdrawable' function returns the correct amount.
+    assert.equal(
+      newBalanceTranslator2.toString(),
+      oldBalanceTranslator.add(web3.utils.toBN(Math.floor(amountTranslator))).toString(),
+      "Getter function does not return correct withdrawable amount for translator"
+    );
+
+    const oldBalanceChallenger = web3.utils.toBN(await web3.eth.getBalance(challenger));
+    await linguo.batchRoundWithdraw(challenger, 0, 0, 2, {
+      from: governor,
+    });
+    const newBalanceChallenger1 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+    assert.equal(
+      newBalanceChallenger1.toString(),
+      oldBalanceChallenger.toString(),
+      "Challenger balance should stay the same after withdrawing from the first 2 rounds"
+    );
+
+    await linguo.batchRoundWithdraw(challenger, 0, 0, 20, {
+      from: governor,
+    });
+
+    const newBalanceChallenger2 = web3.utils.toBN(await web3.eth.getBalance(challenger));
+    assert.equal(
+      newBalanceChallenger2.toString(),
+      newBalanceChallenger1.add(web3.utils.toBN(Math.floor(0.5 * loserAppealFee))).toString(),
+      "Incorrect challenger balance after withdrawing from the last round"
+    );
+
+    // Check that 'amountWithdrawable' function returns the correct amount.
+    assert.equal(
+      newBalanceChallenger2.toString(),
+      oldBalanceChallenger.add(web3.utils.toBN(Math.floor(amountChallenger))).toString(),
+      "Getter function does not return correct withdrawable amount for challenger"
+    );
+  });
 });
