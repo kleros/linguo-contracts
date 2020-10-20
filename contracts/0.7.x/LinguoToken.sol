@@ -14,20 +14,34 @@ import "@kleros/erc-792/contracts/IArbitrable.sol";
 import "@kleros/erc-792/contracts/IArbitrator.sol";
 import "@kleros/erc-792/contracts/erc-1497/IEvidence.sol";
 import "@kleros/ethereum-libraries/contracts/CappedMath.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-/** @title Linguo
+interface IUniswapV2Pair {
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 _reserve0,
+            uint112 _reserve1,
+            uint32 _blockTimestampLast
+        );
+}
+
+/** @title LinguoToken
  *  Linguo is a decentralized platform where anyone can submit a document for translation and have it translated by freelancers.
  *  It has no platform fees and disputes about translation quality are handled by Kleros jurors.
+ *  This version of the contract is made for ERC-20 tokens support.
  *  NOTE: This contract trusts that the Arbitrator is honest and will not reenter or modify its costs during a call.
  *  The arbitrator must support appeal period.
+ *  Also note that this contract trusts that the tokens will not allow the recipients to block the transfers.
  */
-contract Linguo is IArbitrable, IEvidence {
+contract LinguoToken is IArbitrable, IEvidence {
     using CappedMath for uint256;
 
     /* *** Contract variables *** */
-    uint8 public constant VERSION_ID = 0; // Value that represents the version of the contract. The value is incremented each time the new version is deployed. Range for LinguoETH: 0-127, LinguoToken: 128-255.
+    uint8 public constant VERSION_ID = 128; // Value that represents the version of the contract. The value is incremented each time the new version is deployed. Range for LinguoToken: 128-255, LinguoETH: 0-127.
     uint256 public constant MULTIPLIER_DIVISOR = 10000; // Divisor parameter for multipliers.
-    uint256 private constant NOT_PAYABLE_VALUE = (2**256 - 2) / 2; // A value depositor won't be able to pay.
+    uint256 constant NOT_PAYABLE_VALUE = (2**256 - 2) / 2; // A value depositor won't be able to pay.
 
     enum Status {Created, Assigned, AwaitingReview, DisputeCreated, Resolved}
 
@@ -39,13 +53,14 @@ contract Linguo is IArbitrable, IEvidence {
 
     // Arrays of 3 elements in the Task and Round structs map to the parties. Index "0" is not used, "1" is used for translator and "2" for challenger.
     struct Task {
+        ERC20 token; // Token that will be paid for the completion of the task.
         uint256 submissionTimeout; // Time in seconds allotted for submitting a translation. The end of this period is considered a deadline.
         uint256 minPrice; // Minimal price for the translation. When the task is created it has minimal price that gradually increases such as it reaches maximal price at deadline.
         uint256 maxPrice; // Maximal price for the translation and also value that must be deposited by the requester.
         Status status; // Status of the task.
         uint256 lastInteraction; // The time of the last action performed on the task. Note that lastInteraction is updated only during timeout-related actions such as the creation of the task and the submission of the translation.
         address payable requester; // The party requesting the translation.
-        uint256 requesterDeposit; // The deposit requester makes when creating the task. Once a task is assigned this deposit will be partially reimbursed and its value replaced by task price.
+        uint256 requesterDeposit; // The deposit requester makes when creating the task. Once a task is assigned this deposit will be partially reimbursed and its value will be replaced by task price.
         uint256 sumDeposit; // The sum of the deposits of translator and challenger, if any. This value (minus arbitration fees) will be paid to the party that wins the dispute.
         address payable[3] parties; // Translator and challenger of the task.
         uint256 disputeID; // The ID of the dispute created in arbitrator contract.
@@ -53,6 +68,7 @@ contract Linguo is IArbitrable, IEvidence {
         uint256 ruling; // Ruling given to the dispute of the task by the arbitrator.
     }
 
+    // Rounds are only used in appeal funding.
     struct Round {
         uint256[3] paidFees; // Tracks the fees paid by each side in this round.
         bool[3] hasPaid; // True when the side has fully paid its fee. False otherwise.
@@ -60,14 +76,17 @@ contract Linguo is IArbitrable, IEvidence {
         mapping(address => uint256[3]) contributions; // Maps contributors to their contributions for each side.
     }
 
+    ERC20 public WETH; // Address of the wETH token contract. It's required for token -> ETH conversion.
+    address public uniswapFactory; // Address of the UniswapPair factory. It's required for token -> ETH conversion.
+
     address public governor = msg.sender; // The governor of the contract.
     IArbitrator public arbitrator; // The address of the ERC-792 Arbitrator.
     bytes public arbitratorExtraData; // Extra data to allow creting a dispute on the arbitrator.
     uint256 public reviewTimeout; // Time in seconds, during which the submitted translation can be challenged.
-    // All multipliers below are in basis points.
     uint256 public translationMultiplier; // Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
-    uint256 public challengeMultiplier; // Multiplier for calculating the value of the deposit challenger must pay to challenge a translation.
-    uint256 public sharedStakeMultiplier; // Multiplier for calculating the appeal fee that must be paid by submitter in the case where there isn't a winner and loser (e.g. when the arbitrator ruled "refuse to arbitrate").
+
+    // All multipliers below are in basis points.
+    uint256 public sharedStakeMultiplier; // Multiplier for calculating the appeal fee that must be paid by submitter in the case where there is no winner or loser (e.g. when the arbitrator ruled "refuse to arbitrate").
     uint256 public winnerStakeMultiplier; // Multiplier for calculating the appeal fee of the party that won the previous round.
     uint256 public loserStakeMultiplier; // Multiplier for calculating the appeal fee of the party that lost the previous round.
 
@@ -80,9 +99,10 @@ contract Linguo is IArbitrable, IEvidence {
     /** @dev To be emitted when the new task is created.
      *  @param _taskID The ID of the newly created task.
      *  @param _requester The address that created the task.
+     *  @param _token The token that task uses.
      *  @param _timestamp When the task was created.
      */
-    event TaskCreated(uint256 indexed _taskID, address indexed _requester, uint256 _timestamp);
+    event TaskCreated(uint256 indexed _taskID, address indexed _requester, ERC20 _token, uint256 _timestamp);
 
     /** @dev To be emitted when a translator assigns the task to himself.
      *  @param _taskID The ID of the assigned task.
@@ -142,9 +162,10 @@ contract Linguo is IArbitrable, IEvidence {
     /** @dev Constructor.
      *  @param _arbitrator The arbitrator of the contract.
      *  @param _arbitratorExtraData Extra data for the arbitrator.
+     *  @param _WETH Address of the WETH token contract.
+     *  @param _uniswapFactory Address of the UniswapPair factory contract.
      *  @param _reviewTimeout Time in seconds during which a translation can be challenged.
      *  @param _translationMultiplier Multiplier for calculating translator's deposit. In basis points.
-     *  @param _challengeMultiplier Multiplier for calculating challenger's deposit. In basis points.
      *  @param _sharedStakeMultiplier Multiplier of the appeal cost that submitter must pay for a round when there is no winner/loser in the previous round. In basis points.
      *  @param _winnerStakeMultiplier Multiplier of the appeal cost that the winner has to pay for a round. In basis points.
      *  @param _loserStakeMultiplier Multiplier of the appeal cost that the loser has to pay for a round. In basis points.
@@ -152,18 +173,20 @@ contract Linguo is IArbitrable, IEvidence {
     constructor(
         IArbitrator _arbitrator,
         bytes memory _arbitratorExtraData,
+        ERC20 _WETH,
+        address _uniswapFactory,
         uint256 _reviewTimeout,
         uint256 _translationMultiplier,
-        uint256 _challengeMultiplier,
         uint256 _sharedStakeMultiplier,
         uint256 _winnerStakeMultiplier,
         uint256 _loserStakeMultiplier
-    ) public {
+    ) {
         arbitrator = _arbitrator;
         arbitratorExtraData = _arbitratorExtraData;
+        WETH = _WETH;
+        uniswapFactory = _uniswapFactory;
         reviewTimeout = _reviewTimeout;
         translationMultiplier = _translationMultiplier;
-        challengeMultiplier = _challengeMultiplier;
         sharedStakeMultiplier = _sharedStakeMultiplier;
         winnerStakeMultiplier = _winnerStakeMultiplier;
         loserStakeMultiplier = _loserStakeMultiplier;
@@ -194,13 +217,6 @@ contract Linguo is IArbitrable, IEvidence {
         translationMultiplier = _translationMultiplier;
     }
 
-    /** @dev Changes the multiplier for challenger's deposit.
-     *  @param _challengeMultiplier A new value of the multiplier for calculating challenger's deposit. In basis points.
-     */
-    function changeChallengeMultiplier(uint256 _challengeMultiplier) public onlyGovernor {
-        challengeMultiplier = _challengeMultiplier;
-    }
-
     /** @dev Changes the percentage of arbitration fees that must be paid by parties as a fee stake if there was no winner and loser in the previous round.
      *  @param _sharedStakeMultiplier A new value of the multiplier of the appeal cost in case when there is no winner/loser in previous round. In basis point.
      */
@@ -228,34 +244,42 @@ contract Linguo is IArbitrable, IEvidence {
 
     /** @dev Creates a task based on provided details. Requires a value of maximal price to be deposited.
      *  @param _deadline The deadline for the translation to be completed.
-     *  @param _minPrice A minimal price of the translation. In wei.
+     *  @param _token The token that will be paid for the completion of the task.
+     *  @param _minPrice A minimal price of the translation.
+     *  @param _maxPrice A maximal price of the translation. This value should be deposited by the requester.
      *  @param _metaEvidence A URI of meta-evidence object for task submission.
      *  @return taskID The ID of the created task.
      */
     function createTask(
         uint256 _deadline,
+        ERC20 _token,
         uint256 _minPrice,
+        uint256 _maxPrice,
         string calldata _metaEvidence
-    ) external payable returns (uint256 taskID) {
-        require(msg.value >= _minPrice, "Deposited value should be greater than or equal to the min price.");
+    ) external returns (uint256 taskID) {
+        require(_minPrice <= _maxPrice, "The minimal price should be less than or equal to max price.");
+        require(
+            _token.transferFrom(msg.sender, address(this), _maxPrice),
+            "Requester does not have enough tokens to cover the max price."
+        );
         require(_deadline > block.timestamp, "The deadline should be in the future.");
 
         taskID = tasks.length;
 
         Task storage task = tasks.push();
+        task.token = _token;
         task.submissionTimeout = _deadline - block.timestamp;
         task.minPrice = _minPrice;
-        task.maxPrice = msg.value;
+        task.maxPrice = _maxPrice;
         task.lastInteraction = block.timestamp;
         task.requester = msg.sender;
-        task.requesterDeposit = msg.value;
+        task.requesterDeposit = _maxPrice;
 
         emit MetaEvidence(taskID, _metaEvidence);
-        emit TaskCreated(taskID, msg.sender, block.timestamp);
+        emit TaskCreated(taskID, msg.sender, task.token, block.timestamp);
     }
 
-    /** @dev Assigns a specific task to the sender. Requires a translator's deposit.
-     *  Note that the deposit should be a little higher than the required value because of the price increase during the time the transaction is mined. The surplus will be reimbursed.
+    /** @dev Assigns a specific task to the sender. Requires a translator's deposit in wei.
      *  @param _taskID The ID of the task.
      */
     function assignTask(uint256 _taskID) external payable {
@@ -265,8 +289,12 @@ contract Linguo is IArbitrable, IEvidence {
         uint256 price = task.minPrice +
             ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
             task.submissionTimeout;
+
+        uint256 priceETH = getTaskPriceInETH(_taskID);
         uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-        uint256 translatorDeposit = arbitrationCost.addCap((translationMultiplier.mulCap(price)) / MULTIPLIER_DIVISOR);
+        uint256 translatorDeposit = arbitrationCost.addCap(
+            (translationMultiplier.mulCap(priceETH)) / MULTIPLIER_DIVISOR
+        );
 
         require(task.status == Status.Created, "Task has already been assigned or reimbursed.");
         require(msg.value >= translatorDeposit, "Not enough ETH to reach the required deposit value.");
@@ -274,15 +302,15 @@ contract Linguo is IArbitrable, IEvidence {
         task.parties[uint256(Party.Translator)] = msg.sender;
         task.status = Status.Assigned;
 
-        uint256 remainder = task.maxPrice - price;
-        task.requester.send(remainder);
         // Update requester's deposit since we reimbursed him the difference between maximal and actual price.
         task.requesterDeposit = price;
-        task.sumDeposit += translatorDeposit;
+        task.sumDeposit = translatorDeposit;
 
-        remainder = msg.value - translatorDeposit;
+        uint256 remainder = msg.value - translatorDeposit;
         msg.sender.send(remainder);
 
+        remainder = task.maxPrice.subCap(price);
+        require(task.token.transfer(task.requester, remainder), "Could not transfer tokens to the requester.");
         emit TaskAssigned(_taskID, msg.sender, price, block.timestamp);
     }
 
@@ -318,12 +346,13 @@ contract Linguo is IArbitrable, IEvidence {
             "Can't reimburse if the deadline hasn't passed yet."
         );
         task.status = Status.Resolved;
-        // Requester gets his deposit back and also the deposit of the translator, if there was one.  Note that sumDeposit can't contain challenger's deposit until the task is in DisputeCreated status.
-        uint256 amount = task.requesterDeposit + task.sumDeposit;
-        task.requester.send(amount);
-
+        uint256 requesterDeposit = task.requesterDeposit;
+        uint256 sumDeposit = task.sumDeposit;
         task.requesterDeposit = 0;
         task.sumDeposit = 0;
+        // Requester gets his deposit back and also the deposit of the translator, if there was one.
+        task.requester.send(sumDeposit);
+        require(task.token.transfer(task.requester, requesterDeposit), "The token transfer was unsuccessful.");
 
         emit TaskResolved(_taskID, "requester-reimbursed", block.timestamp);
     }
@@ -336,31 +365,31 @@ contract Linguo is IArbitrable, IEvidence {
         require(task.status == Status.AwaitingReview, "The task is in the wrong status.");
         require(block.timestamp - task.lastInteraction > reviewTimeout, "The review phase hasn't passed yet.");
         task.status = Status.Resolved;
-        // Translator gets the price of the task and his deposit back. Note that sumDeposit can't contain challenger's deposit until the task is in DisputeCreated status.
-        uint256 amount = task.requesterDeposit + task.sumDeposit;
-        task.parties[uint256(Party.Translator)].send(amount);
-
+        // Translator gets the price of the task and his deposit back.
+        address payable translator = task.parties[uint256(Party.Translator)];
+        uint256 requesterDeposit = task.requesterDeposit;
+        uint256 sumDeposit = task.sumDeposit;
         task.requesterDeposit = 0;
         task.sumDeposit = 0;
+        translator.send(sumDeposit);
+        require(task.token.transfer(translator, requesterDeposit), "The token transfer was unsuccessful.");
 
         emit TaskResolved(_taskID, "translation-accepted", block.timestamp);
     }
 
-    /** @dev Challenges the translation of a specific task. Requires challenger's deposit.
+    /** @dev Challenges the translation of a specific task. Requires challenger's deposit in wei.
      *  @param _taskID The ID of the task.
      *  @param _evidence A link to evidence using its URI. Ignored if not provided.
      */
     function challengeTranslation(uint256 _taskID, string calldata _evidence) external payable {
         Task storage task = tasks[_taskID];
 
+        // The challenger should only deposit the value of arbitration cost.
         uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-        uint256 challengeDeposit = arbitrationCost.addCap(
-            (challengeMultiplier.mulCap(task.requesterDeposit)) / MULTIPLIER_DIVISOR
-        );
 
         require(task.status == Status.AwaitingReview, "The task is in the wrong status.");
         require(block.timestamp - task.lastInteraction <= reviewTimeout, "The review phase has already passed.");
-        require(msg.value >= challengeDeposit, "Not enough ETH to cover challenge deposit.");
+        require(msg.value >= arbitrationCost, "Not enough ETH to cover challenge deposit.");
 
         task.status = Status.DisputeCreated;
         task.parties[uint256(Party.Challenger)] = msg.sender;
@@ -368,9 +397,9 @@ contract Linguo is IArbitrable, IEvidence {
         task.disputeID = arbitrator.createDispute{value: arbitrationCost}(2, arbitratorExtraData);
         disputeIDtoTaskID[task.disputeID] = _taskID;
         task.rounds.push();
-        task.sumDeposit = task.sumDeposit.addCap(challengeDeposit).subCap(arbitrationCost);
+        // We don't change sumDeposit because adding challenger's deposit while subtracting arbitration fee will give 0 as a result.
 
-        uint256 remainder = msg.value - challengeDeposit;
+        uint256 remainder = msg.value - arbitrationCost;
         msg.sender.send(remainder);
 
         emit Dispute(arbitrator, task.disputeID, _taskID, _taskID);
@@ -396,10 +425,7 @@ contract Linguo is IArbitrable, IEvidence {
         );
 
         (uint256 appealPeriodStart, uint256 appealPeriodEnd) = arbitrator.appealPeriod(task.disputeID);
-        require(
-            block.timestamp >= appealPeriodStart && block.timestamp < appealPeriodEnd,
-            "Funding must be made within the appeal period."
-        );
+        require(block.timestamp >= appealPeriodStart && block.timestamp < appealPeriodEnd, "Funding must be made within the appeal period.");
 
         uint256 winner = arbitrator.currentRuling(task.disputeID);
         uint256 multiplier;
@@ -561,24 +587,27 @@ contract Linguo is IArbitrable, IEvidence {
         Task storage task = tasks[taskID];
         task.status = Status.Resolved;
         task.ruling = _ruling;
-        uint256 amount;
-
-        if (_ruling == uint256(Party.None)) {
-            task.requester.send(task.requesterDeposit);
-            // The value of sumDeposit is split among parties in this case. If the sum is uneven the value of 1 wei can be burnt.
-            amount = task.sumDeposit / 2;
-            task.parties[uint256(Party.Translator)].send(amount);
-            task.parties[uint256(Party.Challenger)].send(amount);
-        } else if (_ruling == uint256(Party.Translator)) {
-            amount = task.requesterDeposit + task.sumDeposit;
-            task.parties[uint256(Party.Translator)].send(amount);
-        } else {
-            task.requester.send(task.requesterDeposit);
-            task.parties[uint256(Party.Challenger)].send(task.sumDeposit);
-        }
-
+        uint256 sumDeposit = task.sumDeposit;
+        uint256 requesterDeposit = task.requesterDeposit;
         task.requesterDeposit = 0;
         task.sumDeposit = 0;
+
+        if (_ruling == uint256(Party.None)) {
+            // The value of sumDeposit is split among parties in this case. If it's uneven the value of 1 wei can be burnt.
+            sumDeposit = sumDeposit / 2;
+            task.parties[uint256(Party.Translator)].send(sumDeposit);
+            task.parties[uint256(Party.Challenger)].send(sumDeposit);
+            require(task.token.transfer(task.requester, requesterDeposit), "Could not transfer tokens to requester.");
+        } else if (_ruling == uint256(Party.Translator)) {
+            task.parties[uint256(Party.Translator)].send(sumDeposit);
+            require(
+                task.token.transfer(task.parties[uint256(Party.Translator)], requesterDeposit),
+                "Could not transfer tokens to translator."
+            );
+        } else {
+            task.parties[uint256(Party.Challenger)].send(sumDeposit);
+            require(task.token.transfer(task.requester, requesterDeposit), "Could not transfer tokens to requester.");
+        }
 
         emit TaskResolved(taskID, "dispute-settled", block.timestamp);
     }
@@ -602,7 +631,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @param _beneficiary The contributor for which to query.
      *  @return total The total amount of wei available to withdraw.
      */
-    function amountWithdrawable(uint256 _taskID, address payable _beneficiary) external view returns (uint256 total) {
+    function amountWithdrawable(uint256 _taskID, address _beneficiary) external view returns (uint256 total) {
         Task storage task = tasks[_taskID];
         if (task.status != Status.Resolved) return total;
 
@@ -643,11 +672,10 @@ contract Linguo is IArbitrable, IEvidence {
         if (block.timestamp - task.lastInteraction > task.submissionTimeout || task.status != Status.Created) {
             deposit = NOT_PAYABLE_VALUE;
         } else {
-            uint256 price = task.minPrice +
-                ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
-                task.submissionTimeout;
+            uint256 priceETH = getTaskPriceInETH(_taskID);
+
             uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-            deposit = arbitrationCost.addCap((translationMultiplier.mulCap(price)) / MULTIPLIER_DIVISOR);
+            deposit = arbitrationCost.addCap((translationMultiplier.mulCap(priceETH)) / MULTIPLIER_DIVISOR);
         }
     }
 
@@ -660,12 +688,11 @@ contract Linguo is IArbitrable, IEvidence {
         if (block.timestamp - task.lastInteraction > reviewTimeout || task.status != Status.AwaitingReview) {
             deposit = NOT_PAYABLE_VALUE;
         } else {
-            uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-            deposit = arbitrationCost.addCap((challengeMultiplier.mulCap(task.requesterDeposit)) / MULTIPLIER_DIVISOR);
+            deposit = arbitrator.arbitrationCost(arbitratorExtraData);
         }
     }
 
-    /** @dev Gets the current price of a specified task.
+    /** @dev Gets the current price of a specified task. Returns 0 if the task can no longer be assigned.
      *  @param _taskID The ID of the task.
      *  @return price The price of the task.
      */
@@ -678,6 +705,40 @@ contract Linguo is IArbitrable, IEvidence {
                 task.minPrice +
                 ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
                 task.submissionTimeout;
+        }
+    }
+
+    /** @dev Gets the current price of a specified task in ETH. Returns 0 if the task can no longer be assigned.
+     *  @param _taskID The ID of the task.
+     *  @return priceETH The price of the task.
+     */
+    function getTaskPriceInETH(uint256 _taskID) public view returns (uint256 priceETH) {
+        Task storage task = tasks[_taskID];
+        uint256 tokenPrice = task.minPrice +
+            ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
+            task.submissionTimeout;
+        if (block.timestamp - task.lastInteraction > task.submissionTimeout || task.status != Status.Created) priceETH = 0;
+        else if (task.token == WETH) priceETH = tokenPrice;
+        else {
+            (ERC20 token0, ERC20 token1) = task.token < WETH ? (task.token, WETH) : (WETH, task.token);
+            IUniswapV2Pair pair = IUniswapV2Pair(
+                address(
+                    uint256(
+                        keccak256(
+                            abi.encodePacked(
+                                hex"ff",
+                                uniswapFactory,
+                                keccak256(abi.encodePacked(token0, token1)),
+                                hex"96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f"
+                            )
+                        )
+                    )
+                )
+            );
+            (uint256 reserve0, uint256 reserve1, ) = pair.getReserves();
+            (uint256 reserveA, uint256 reserveB) = token0 == task.token ? (reserve0, reserve1) : (reserve1, reserve0);
+            require(reserveA > 0 && reserveB > 0, "Could not calculate the price.");
+            priceETH = tokenPrice.mulCap(reserveB) / reserveA;
         }
     }
 
