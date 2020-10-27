@@ -61,8 +61,8 @@ contract Linguo is IArbitrable, IEvidence {
     }
 
     address public governor = msg.sender; // The governor of the contract.
-    IArbitrator public arbitrator; // The address of the ERC-792 Arbitrator.
-    bytes public arbitratorExtraData; // Extra data to allow creting a dispute on the arbitrator.
+    IArbitrator public immutable arbitrator; // The address of the ERC-792 Arbitrator.
+    bytes public arbitratorExtraData; // Extra data to allow creating a dispute on the arbitrator.
     uint256 public reviewTimeout; // Time in seconds, during which the submitted translation can be challenged.
     // All multipliers below are in basis points.
     uint256 public translationMultiplier; // Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
@@ -278,7 +278,7 @@ contract Linguo is IArbitrable, IEvidence {
         task.requester.send(remainder);
         // Update requester's deposit since we reimbursed him the difference between maximal and actual price.
         task.requesterDeposit = price;
-        task.sumDeposit += translatorDeposit;
+        task.sumDeposit = translatorDeposit;
 
         remainder = msg.value - translatorDeposit;
         msg.sender.send(remainder);
@@ -318,7 +318,8 @@ contract Linguo is IArbitrable, IEvidence {
             "Can't reimburse if the deadline hasn't passed yet."
         );
         task.status = Status.Resolved;
-        // Requester gets his deposit back and also the deposit of the translator, if there was one.  Note that sumDeposit can't contain challenger's deposit until the task is in DisputeCreated status.
+        // Requester gets his deposit back and also the deposit of the translator, if there was one.
+        // Note that sumDeposit can't contain challenger's deposit until the task is in DisputeCreated status.
         uint256 amount = task.requesterDeposit + task.sumDeposit;
         task.requester.send(amount);
 
@@ -715,7 +716,7 @@ contract Linguo is IArbitrable, IEvidence {
 
     /** @dev Gets the addresses of parties of a specified task.
      *  @param _taskID The ID of the task.
-     *  @return parties The addresses of requester, translator and challenger.
+     *  @return parties The addresses of translator and challenger as [ZERO_ADDRESS, translator, challenger].
      */
     function getTaskParties(uint256 _taskID) public view returns (address payable[3] memory parties) {
         Task storage task = tasks[_taskID];
@@ -727,7 +728,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @param _round The round to be queried.
      *  @return paidFees The amount paid by each party in the round.
      *  @return hasPaid Whether or not a given party has paid the full fees for the round.
-     *  @return feeRewards The amount available to pay for fees provide rewards to the winenr side.
+     *  @return feeRewards The amount of fees that will be available as rewards for the winner.
      */
     function getRoundInfo(uint256 _taskID, uint256 _round)
         public

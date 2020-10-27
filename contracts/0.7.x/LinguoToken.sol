@@ -14,7 +14,7 @@ import "@kleros/erc-792/contracts/IArbitrable.sol";
 import "@kleros/erc-792/contracts/IArbitrator.sol";
 import "@kleros/erc-792/contracts/erc-1497/IEvidence.sol";
 import "@kleros/ethereum-libraries/contracts/CappedMath.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 interface IUniswapV2Pair {
     function getReserves()
@@ -53,7 +53,7 @@ contract LinguoToken is IArbitrable, IEvidence {
 
     // Arrays of 3 elements in the Task and Round structs map to the parties. Index "0" is not used, "1" is used for translator and "2" for challenger.
     struct Task {
-        ERC20 token; // Token that will be paid for the completion of the task.
+        IERC20 token; // Token that will be paid for the completion of the task.
         uint256 submissionTimeout; // Time in seconds allotted for submitting a translation. The end of this period is considered a deadline.
         uint256 minPrice; // Minimal price for the translation. When the task is created it has minimal price that gradually increases such as it reaches maximal price at deadline.
         uint256 maxPrice; // Maximal price for the translation and also value that must be deposited by the requester.
@@ -76,12 +76,12 @@ contract LinguoToken is IArbitrable, IEvidence {
         mapping(address => uint256[3]) contributions; // Maps contributors to their contributions for each side.
     }
 
-    ERC20 public WETH; // Address of the wETH token contract. It's required for token -> ETH conversion.
-    address public uniswapFactory; // Address of the UniswapPair factory. It's required for token -> ETH conversion.
+    IERC20 public immutable WETH; // Address of the wETH token contract. It's required for token -> ETH conversion.
+    address public immutable uniswapFactory; // Address of the UniswapPair factory. It's required for token -> ETH conversion.
 
     address public governor = msg.sender; // The governor of the contract.
-    IArbitrator public arbitrator; // The address of the ERC-792 Arbitrator.
-    bytes public arbitratorExtraData; // Extra data to allow creting a dispute on the arbitrator.
+    IArbitrator public immutable arbitrator; // The address of the ERC-792 Arbitrator.
+    bytes public arbitratorExtraData; // Extra data to allow creating a dispute on the arbitrator.
     uint256 public reviewTimeout; // Time in seconds, during which the submitted translation can be challenged.
     uint256 public translationMultiplier; // Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
 
@@ -102,7 +102,7 @@ contract LinguoToken is IArbitrable, IEvidence {
      *  @param _token The token that task uses.
      *  @param _timestamp When the task was created.
      */
-    event TaskCreated(uint256 indexed _taskID, address indexed _requester, ERC20 _token, uint256 _timestamp);
+    event TaskCreated(uint256 indexed _taskID, address indexed _requester, IERC20 _token, uint256 _timestamp);
 
     /** @dev To be emitted when a translator assigns the task to himself.
      *  @param _taskID The ID of the assigned task.
@@ -173,7 +173,7 @@ contract LinguoToken is IArbitrable, IEvidence {
     constructor(
         IArbitrator _arbitrator,
         bytes memory _arbitratorExtraData,
-        ERC20 _WETH,
+        IERC20 _WETH,
         address _uniswapFactory,
         uint256 _reviewTimeout,
         uint256 _translationMultiplier,
@@ -252,7 +252,7 @@ contract LinguoToken is IArbitrable, IEvidence {
      */
     function createTask(
         uint256 _deadline,
-        ERC20 _token,
+        IERC20 _token,
         uint256 _minPrice,
         uint256 _maxPrice,
         string calldata _metaEvidence
@@ -286,11 +286,7 @@ contract LinguoToken is IArbitrable, IEvidence {
         Task storage task = tasks[_taskID];
         require(block.timestamp - task.lastInteraction <= task.submissionTimeout, "The deadline has already passed.");
 
-        uint256 price = task.minPrice +
-            ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
-            task.submissionTimeout;
-
-        uint256 priceETH = getTaskPriceInETH(_taskID);
+        (uint256 priceETH, uint256 price) = getTaskEquivalentPrices(_taskID);
         uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
         uint256 translatorDeposit = arbitrationCost.addCap(
             (translationMultiplier.mulCap(priceETH)) / MULTIPLIER_DIVISOR
@@ -425,7 +421,10 @@ contract LinguoToken is IArbitrable, IEvidence {
         );
 
         (uint256 appealPeriodStart, uint256 appealPeriodEnd) = arbitrator.appealPeriod(task.disputeID);
-        require(block.timestamp >= appealPeriodStart && block.timestamp < appealPeriodEnd, "Funding must be made within the appeal period.");
+        require(
+            block.timestamp >= appealPeriodStart && block.timestamp < appealPeriodEnd,
+            "Funding must be made within the appeal period."
+        );
 
         uint256 winner = arbitrator.currentRuling(task.disputeID);
         uint256 multiplier;
@@ -672,7 +671,7 @@ contract LinguoToken is IArbitrable, IEvidence {
         if (block.timestamp - task.lastInteraction > task.submissionTimeout || task.status != Status.Created) {
             deposit = NOT_PAYABLE_VALUE;
         } else {
-            uint256 priceETH = getTaskPriceInETH(_taskID);
+            (uint256 priceETH,) = getTaskEquivalentPrices(_taskID);
 
             uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
             deposit = arbitrationCost.addCap((translationMultiplier.mulCap(priceETH)) / MULTIPLIER_DIVISOR);
@@ -708,37 +707,45 @@ contract LinguoToken is IArbitrable, IEvidence {
         }
     }
 
-    /** @dev Gets the current price of a specified task in ETH. Returns 0 if the task can no longer be assigned.
+    /** @dev Gets the current price of a specified task and the equivalent value in ETH.
+     *  Returns 0 if the task can no longer be assigned.
      *  @param _taskID The ID of the task.
-     *  @return priceETH The price of the task.
+     *  @return priceETH The equivalent price of the task in ETH.
+     *  @return priceToken The price of the task.
      */
-    function getTaskPriceInETH(uint256 _taskID) public view returns (uint256 priceETH) {
+    function getTaskEquivalentPrices(uint256 _taskID) public view returns (uint256 priceETH, uint256 priceToken) {
         Task storage task = tasks[_taskID];
-        uint256 tokenPrice = task.minPrice +
-            ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
-            task.submissionTimeout;
-        if (block.timestamp - task.lastInteraction > task.submissionTimeout || task.status != Status.Created) priceETH = 0;
-        else if (task.token == WETH) priceETH = tokenPrice;
-        else {
-            (ERC20 token0, ERC20 token1) = task.token < WETH ? (task.token, WETH) : (WETH, task.token);
-            IUniswapV2Pair pair = IUniswapV2Pair(
-                address(
-                    uint256(
-                        keccak256(
-                            abi.encodePacked(
-                                hex"ff",
-                                uniswapFactory,
-                                keccak256(abi.encodePacked(token0, token1)),
-                                hex"96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f"
+        if (task.status == Status.Created && (block.timestamp - task.lastInteraction) <= task.submissionTimeout) {
+            priceToken =
+                task.minPrice +
+                ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
+                task.submissionTimeout;
+
+            if (task.token == WETH) {
+                priceETH = priceToken;
+            } else {
+                (IERC20 token0, IERC20 token1) = task.token < WETH ? (task.token, WETH) : (WETH, task.token);
+                IUniswapV2Pair pair = IUniswapV2Pair(
+                    address(
+                        uint256(
+                            keccak256(
+                                abi.encodePacked(
+                                    hex"ff",
+                                    uniswapFactory,
+                                    keccak256(abi.encodePacked(token0, token1)),
+                                    hex"96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f"
+                                )
                             )
                         )
                     )
-                )
-            );
-            (uint256 reserve0, uint256 reserve1, ) = pair.getReserves();
-            (uint256 reserveA, uint256 reserveB) = token0 == task.token ? (reserve0, reserve1) : (reserve1, reserve0);
-            require(reserveA > 0 && reserveB > 0, "Could not calculate the price.");
-            priceETH = tokenPrice.mulCap(reserveB) / reserveA;
+                );
+                (uint256 reserve0, uint256 reserve1, ) = pair.getReserves();
+                (uint256 reserveA, uint256 reserveB) = token0 == task.token
+                    ? (reserve0, reserve1)
+                    : (reserve1, reserve0);
+                require(reserveA > 0 && reserveB > 0, "Could not calculate the price.");
+                priceETH = priceToken.mulCap(reserveB) / reserveA;
+            }
         }
     }
 
@@ -776,7 +783,7 @@ contract LinguoToken is IArbitrable, IEvidence {
 
     /** @dev Gets the addresses of parties of a specified task.
      *  @param _taskID The ID of the task.
-     *  @return parties The addresses of requester, translator and challenger.
+     *  @return parties The addresses of translator and challenger as [ZERO_ADDRESS, translator, challenger].
      */
     function getTaskParties(uint256 _taskID) public view returns (address payable[3] memory parties) {
         Task storage task = tasks[_taskID];
@@ -788,7 +795,7 @@ contract LinguoToken is IArbitrable, IEvidence {
      *  @param _round The round to be queried.
      *  @return paidFees The amount paid by each party in the round.
      *  @return hasPaid Whether or not a given party has paid the full fees for the round.
-     *  @return feeRewards The amount available to pay for fees provide rewards to the winenr side.
+     *  @return feeRewards The amount of fees that will be available as rewards for the winner.
      */
     function getRoundInfo(uint256 _taskID, uint256 _round)
         public

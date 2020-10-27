@@ -168,8 +168,8 @@ describe("LinguoToken", function () {
     // an error up to 1% is allowed because of time fluctuation
     assert(Math.abs(Number(priceLinguo) - price) <= price / 100, "Contract returns incorrect task price");
 
-    const priceETH = Number(await linguo.getTaskPriceInETH(0));
-    assert.equal(priceETH, Number(priceLinguo), "Contract returns incorrect price in ETH");
+    const {priceETH} = await linguo.getTaskEquivalentPrices(0);
+    assert.equal(Number(priceETH), Number(priceLinguo), "Contract returns incorrect price in ETH");
 
     const deposit = Math.floor(arbitrationFee + (priceETH * translationMultiplier) / MULTIPLIER_DIVISOR);
     const depositLinguo = await linguo.getDepositValue(0);
@@ -181,7 +181,7 @@ describe("LinguoToken", function () {
     const priceLinguo = await linguo.getTaskPrice(0);
     assert.equal(Number(priceLinguo), 0, "Contract returns incorrect task price after submission timeout ended");
 
-    const priceETH = await linguo.getTaskPriceInETH(0);
+    const {priceETH} = await linguo.getTaskEquivalentPrices(0);
     assert.equal(Number(priceETH), 0, "Contract returns incorrect task price in ETH after submission timeout ended");
 
     const deposit = NOT_PAYABLE_VALUE;
@@ -216,7 +216,7 @@ describe("LinguoToken", function () {
       "Contract returns incorrect required deposit if status is not `created`"
     );
 
-    const priceETH = await linguo.getTaskPriceInETH(0);
+    const {priceETH} = await linguo.getTaskEquivalentPrices(0);
     assert.equal(Number(priceETH), 0, "Contract returns incorrect task price in ETH if status is not `created`");
   });
 
