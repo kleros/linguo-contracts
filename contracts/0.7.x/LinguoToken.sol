@@ -8,7 +8,6 @@
  * SPDX-License-Identifier: MIT
  */
 pragma solidity ^0.7.4;
-pragma experimental ABIEncoderV2;
 
 import "@kleros/erc-792/contracts/IArbitrable.sol";
 import "@kleros/erc-792/contracts/IArbitrator.sol";
