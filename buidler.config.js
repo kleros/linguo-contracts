@@ -1,9 +1,11 @@
+require("dotenv/config");
 const {usePlugin, task} = require("@nomiclabs/buidler/config");
 
 // usePlugin("@nomiclabs/buidler-waffle");
 // usePlugin("@nomiclabs/buidler-ethers");
 usePlugin("@nomiclabs/buidler-web3");
 usePlugin("@nomiclabs/buidler-truffle5");
+usePlugin("buidler-deploy");
 
 // This is a sample Buidler task. To learn how to create your own go to
 // https://buidler.dev/guides/create-task.html
@@ -30,5 +32,33 @@ module.exports = {
   },
   paths: {
     sources: "./contracts/0.7.x",
+  },
+  networks: {
+    buidlerevm: {
+      live: false,
+      saveDeployments: true,
+      tags: ["test", "local"],
+    },
+    kovan: {
+      chainId: 42,
+      url: `https://kovan.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      accounts: [process.env.PRIVATE_KEY],
+      live: true,
+      saveDeployments: true,
+      tags: ["staging"],
+    },
+    mainnet: {
+      chainId: 1,
+      url: `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      accounts: [process.env.PRIVATE_KEY],
+      live: true,
+      saveDeployments: true,
+      tags: ["production"],
+    },
+  },
+  namedAccounts: {
+    deployer: {
+      default: 0,
+    },
   },
 };

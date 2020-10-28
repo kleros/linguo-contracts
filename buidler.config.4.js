@@ -4,6 +4,7 @@ const {usePlugin, task} = require("@nomiclabs/buidler/config");
 // usePlugin("@nomiclabs/buidler-ethers");
 usePlugin("@nomiclabs/buidler-web3");
 usePlugin("@nomiclabs/buidler-truffle5");
+usePlugin("buidler-deploy");
 
 // This is a sample Buidler task. To learn how to create your own go to
 // https://buidler.dev/guides/create-task.html
