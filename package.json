@@ -1,11 +1,12 @@
 {
   "name": "@kleros/linguo-contracts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "main": "index.js",
   "repository": "git@github.com:kleros/linguo-contracts.git",
   "author": "Kleros",
   "license": "MIT",
   "files": [
+    "artifacts/",
     "contracts/",
     "deployments/**/*.json"
   ],
