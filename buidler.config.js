@@ -36,7 +36,7 @@ module.exports = {
   networks: {
     buidlerevm: {
       live: false,
-      saveDeployments: true,
+      saveDeployments: false,
       tags: ["test", "local"],
     },
     kovan: {

@@ -144,7 +144,7 @@ contract LinguoToken is IArbitrable, IEvidence {
      *  @param _contributor The address of the contributor.
      *  @param _amount The amount contributed.
      */
-    event AppealContribution(uint256 indexed _taskID, Party _party, address _contributor, uint256 _amount);
+    event AppealContribution(uint256 indexed _taskID, Party _party, address indexed _contributor, uint256 _amount);
 
     /** @dev To be emitted when the appeal fees of one of the parties are fully funded.
      *  @param _taskID The ID of the respective task.
@@ -670,7 +670,7 @@ contract LinguoToken is IArbitrable, IEvidence {
         if (block.timestamp - task.lastInteraction > task.submissionTimeout || task.status != Status.Created) {
             deposit = NOT_PAYABLE_VALUE;
         } else {
-            (uint256 priceETH,) = getTaskEquivalentPrices(_taskID);
+            (uint256 priceETH, ) = getTaskEquivalentPrices(_taskID);
 
             uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
             deposit = arbitrationCost.addCap((translationMultiplier.mulCap(priceETH)) / MULTIPLIER_DIVISOR);

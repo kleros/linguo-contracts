@@ -15,10 +15,10 @@ import "@kleros/erc-792/contracts/erc-1497/IEvidence.sol";
 import "@kleros/ethereum-libraries/contracts/CappedMath.sol";
 
 /** @title Linguo
- *  Linguo is a decentralized platform where anyone can submit a document for translation and have it translated by freelancers.
+ *  @notice Linguo is a decentralized platform where anyone can submit a document for translation and have it translated by freelancers.
  *  It has no platform fees and disputes about translation quality are handled by Kleros jurors.
- *  NOTE: This contract trusts that the Arbitrator is honest and will not reenter or modify its costs during a call.
- *  The arbitrator must support appeal period.
+ *  @dev This contract trusts that the Arbitrator is honest and will not reenter or modify its costs during a call.
+ *  The arbitrator must support appeal periods.
  */
 contract Linguo is IArbitrable, IEvidence {
     using CappedMath for uint256;
@@ -26,28 +26,28 @@ contract Linguo is IArbitrable, IEvidence {
     /* *** Contract variables *** */
     uint8 public constant VERSION_ID = 0; // Value that represents the version of the contract. The value is incremented each time the new version is deployed. Range for LinguoETH: 0-127, LinguoToken: 128-255.
     uint256 public constant MULTIPLIER_DIVISOR = 10000; // Divisor parameter for multipliers.
-    uint256 private constant NOT_PAYABLE_VALUE = (2**256 - 2) / 2; // A value depositor won't be able to pay.
+    uint256 private constant NOT_PAYABLE_VALUE = (2**256 - 2) / 2; // A value depositors won't be able to pay.
 
     enum Status {Created, Assigned, AwaitingReview, DisputeCreated, Resolved}
 
     enum Party {
-        None, // Party that is mapped with 0 dispute ruling.
-        Translator, // The one performing translation task.
-        Challenger // The one challenging translated text in the review period.
+        None, // Party that is mapped with a 0 dispute ruling.
+        Translator, // Party performing translation task.
+        Challenger // Party challenging translated text in the review period.
     }
 
-    // Arrays of 3 elements in the Task and Round structs map to the parties. Index "0" is not used, "1" is used for translator and "2" for challenger.
+    // Arrays of 3 elements in the Task and Round structs map to the parties. Index "0" is not used, "1" is used for the translator and "2" for the challenger.
     struct Task {
         uint256 submissionTimeout; // Time in seconds allotted for submitting a translation. The end of this period is considered a deadline.
-        uint256 minPrice; // Minimal price for the translation. When the task is created it has minimal price that gradually increases such as it reaches maximal price at deadline.
-        uint256 maxPrice; // Maximal price for the translation and also value that must be deposited by the requester.
+        uint256 minPrice; // Minimum price for the translation. When the task is created it has this minimum price that gradually increases such that it reaches the maximum price at the deadline.
+        uint256 maxPrice; // Maximum price for the translation and also the value that must be deposited by the requester.
         Status status; // Status of the task.
         uint256 lastInteraction; // The time of the last action performed on the task. Note that lastInteraction is updated only during timeout-related actions such as the creation of the task and the submission of the translation.
         address payable requester; // The party requesting the translation.
-        uint256 requesterDeposit; // The deposit requester makes when creating the task. Once a task is assigned this deposit will be partially reimbursed and its value replaced by task price.
-        uint256 sumDeposit; // The sum of the deposits of translator and challenger, if any. This value (minus arbitration fees) will be paid to the party that wins the dispute.
+        uint256 requesterDeposit; // The deposit requester makes when creating the task. Once the task is assigned this deposit will be partially reimbursed and its value replaced by the task price.
+        uint256 sumDeposit; // The sum of the deposits of the translator and the challenger, if any. This value (minus arbitration fees) will be paid to the party that wins the dispute.
         address payable[3] parties; // Translator and challenger of the task.
-        uint256 disputeID; // The ID of the dispute created in arbitrator contract.
+        uint256 disputeID; // The ID of the dispute created in the arbitrator contract.
         Round[] rounds; // Tracks each appeal round of a dispute.
         uint256 ruling; // Ruling given to the dispute of the task by the arbitrator.
     }
@@ -66,7 +66,7 @@ contract Linguo is IArbitrable, IEvidence {
     // All multipliers below are in basis points.
     uint256 public translationMultiplier; // Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
     uint256 public challengeMultiplier; // Multiplier for calculating the value of the deposit challenger must pay to challenge a translation.
-    uint256 public sharedStakeMultiplier; // Multiplier for calculating the appeal fee that must be paid by submitter in the case where there isn't a winner and loser (e.g. when the arbitrator ruled "refuse to arbitrate").
+    uint256 public sharedStakeMultiplier; // Multiplier for calculating the appeal fee that must be paid by the submitter in the case where there isn't a winner and loser (e.g. when the arbitrator ruled "refuse to arbitrate").
     uint256 public winnerStakeMultiplier; // Multiplier for calculating the appeal fee of the party that won the previous round.
     uint256 public loserStakeMultiplier; // Multiplier for calculating the appeal fee of the party that lost the previous round.
 
@@ -76,14 +76,14 @@ contract Linguo is IArbitrable, IEvidence {
 
     /* *** Events *** */
 
-    /** @dev To be emitted when the new task is created.
+    /** @dev To be emitted when a new task is created.
      *  @param _taskID The ID of the newly created task.
      *  @param _requester The address that created the task.
      *  @param _timestamp When the task was created.
      */
     event TaskCreated(uint256 indexed _taskID, address indexed _requester, uint256 _timestamp);
 
-    /** @dev To be emitted when a translator assigns the task to himself.
+    /** @dev To be emitted when a translator assigns a task to himself.
      *  @param _taskID The ID of the assigned task.
      *  @param _translator The address that was assigned to the task.
      *  @param _price The task price at the moment it was assigned.
@@ -124,7 +124,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @param _contributor The address of the contributor.
      *  @param _amount The amount contributed.
      */
-    event AppealContribution(uint256 indexed _taskID, Party _party, address _contributor, uint256 _amount);
+    event AppealContribution(uint256 indexed _taskID, Party _party, address indexed _contributor, uint256 _amount);
 
     /** @dev To be emitted when the appeal fees of one of the parties are fully funded.
      *  @param _taskID The ID of the respective task.
@@ -179,21 +179,21 @@ contract Linguo is IArbitrable, IEvidence {
         governor = _governor;
     }
 
-    /** @dev Changes the time allocated for review phase.
+    /** @dev Changes the time allocated for the review phase.
      *  @param _reviewTimeout A new value of the time allotted for reviewing a translation. In seconds.
      */
     function changeReviewTimeout(uint256 _reviewTimeout) public onlyGovernor {
         reviewTimeout = _reviewTimeout;
     }
 
-    /** @dev Changes the multiplier for translator's deposit.
+    /** @dev Changes the multiplier for translators' deposit.
      *  @param _translationMultiplier A new value of the multiplier for calculating translator's deposit. In basis points.
      */
     function changeTranslationMultiplier(uint256 _translationMultiplier) public onlyGovernor {
         translationMultiplier = _translationMultiplier;
     }
 
-    /** @dev Changes the multiplier for challenger's deposit.
+    /** @dev Changes the multiplier for challengers' deposit.
      *  @param _challengeMultiplier A new value of the multiplier for calculating challenger's deposit. In basis points.
      */
     function changeChallengeMultiplier(uint256 _challengeMultiplier) public onlyGovernor {
@@ -201,7 +201,7 @@ contract Linguo is IArbitrable, IEvidence {
     }
 
     /** @dev Changes the percentage of arbitration fees that must be paid by parties as a fee stake if there was no winner and loser in the previous round.
-     *  @param _sharedStakeMultiplier A new value of the multiplier of the appeal cost in case when there is no winner/loser in previous round. In basis point.
+     *  @param _sharedStakeMultiplier A new value of the multiplier of the appeal cost in case where there was no winner/loser in previous round. In basis point.
      */
     function changeSharedStakeMultiplier(uint256 _sharedStakeMultiplier) public onlyGovernor {
         sharedStakeMultiplier = _sharedStakeMultiplier;
@@ -215,7 +215,7 @@ contract Linguo is IArbitrable, IEvidence {
     }
 
     /** @dev Changes the percentage of arbitration fees that must be paid as a fee stake by the party that lost the previous round.
-     *  @param _loserStakeMultiplier A new value of the multiplier of the appeal cost that the party that lost the previous round has to pay. In basis points.
+     *  @param _loserStakeMultiplier A new value for the multiplier of the appeal cost that the party that lost the previous round has to pay. In basis points.
      */
     function changeLoserStakeMultiplier(uint256 _loserStakeMultiplier) public onlyGovernor {
         loserStakeMultiplier = _loserStakeMultiplier;
@@ -225,10 +225,10 @@ contract Linguo is IArbitrable, IEvidence {
     // *    Modifying the state   * //
     // **************************** //
 
-    /** @dev Creates a task based on provided details. Requires a value of maximal price to be deposited.
+    /** @dev Creates a task based on provided details. Requires a value of maximum price to be deposited.
      *  @param _deadline The deadline for the translation to be completed.
-     *  @param _minPrice A minimal price of the translation. In wei.
-     *  @param _metaEvidence A URI of meta-evidence object for task submission.
+     *  @param _minPrice A minimum price of the translation. In wei.
+     *  @param _metaEvidence A URI of a meta-evidence object for task submission.
      *  @return taskID The ID of the created task.
      */
     function createTask(
@@ -275,7 +275,7 @@ contract Linguo is IArbitrable, IEvidence {
 
         uint256 remainder = task.maxPrice - price;
         task.requester.send(remainder);
-        // Update requester's deposit since we reimbursed him the difference between maximal and actual price.
+        // Update requester's deposit since we reimbursed him the difference between maximum and actual price.
         task.requesterDeposit = price;
         task.sumDeposit = translatorDeposit;
 
@@ -298,7 +298,7 @@ contract Linguo is IArbitrable, IEvidence {
         require(block.timestamp - task.lastInteraction <= task.submissionTimeout, "The deadline has already passed.");
         require(
             msg.sender == task.parties[uint256(Party.Translator)],
-            "Can't submit translation to the task that wasn't assigned to you."
+            "Can't submit translation to a task that wasn't assigned to you."
         );
         task.status = Status.AwaitingReview;
         task.lastInteraction = block.timestamp;
@@ -328,7 +328,7 @@ contract Linguo is IArbitrable, IEvidence {
         emit TaskResolved(_taskID, "requester-reimbursed", block.timestamp);
     }
 
-    /** @dev Pays the translator for completed task if no one challenged the translation during review period.
+    /** @dev Pays the translator for completed task if no one challenged the translation during the review period.
      *  @param _taskID The ID of the task.
      */
     function acceptTranslation(uint256 _taskID) external {
@@ -336,7 +336,7 @@ contract Linguo is IArbitrable, IEvidence {
         require(task.status == Status.AwaitingReview, "The task is in the wrong status.");
         require(block.timestamp - task.lastInteraction > reviewTimeout, "The review phase hasn't passed yet.");
         task.status = Status.Resolved;
-        // Translator gets the price of the task and his deposit back. Note that sumDeposit can't contain challenger's deposit until the task is in DisputeCreated status.
+        // Translator gets the price of the task and his deposit back. Note that sumDeposit can't contain challenger's deposit until the task has DisputeCreated status.
         uint256 amount = task.requesterDeposit + task.sumDeposit;
         task.parties[uint256(Party.Translator)].send(amount);
 
@@ -389,7 +389,7 @@ contract Linguo is IArbitrable, IEvidence {
             _side == Party.Translator || _side == Party.Challenger,
             "Recipient must be either the translator or challenger."
         );
-        require(task.status == Status.DisputeCreated, "No dispute to appeal");
+        require(task.status == Status.DisputeCreated, "No dispute to appeal.");
         require(
             arbitrator.disputeStatus(task.disputeID) == IArbitrator.DisputeStatus.Appealable,
             "Dispute is not appealable."
@@ -468,7 +468,7 @@ contract Linguo is IArbitrable, IEvidence {
         return (_requiredAmount, remainder);
     }
 
-    /** @dev Witdraws contributions of appeal rounds. Reimburses contributions if no disputes were raised. If a dispute was raised, sends the fee stake rewards and reimbursements proportional to the contributions made to the winner of a dispute.
+    /** @dev Withdraws contributions of appeal rounds. Reimburses contributions if no disputes were raised. If a dispute was raised, sends the fee stake rewards and reimbursements proportional to the contributions made to the winner of a dispute.
      *  @param _beneficiary The address that made contributions.
      *  @param _taskID The ID of the associated task.
      *  @param _round The round from which to withdraw.
@@ -511,7 +511,7 @@ contract Linguo is IArbitrable, IEvidence {
             round.contributions[_beneficiary][task.ruling] = 0;
         }
 
-        _beneficiary.send(reward); // It is the user responsibility to accept ETH.
+        _beneficiary.send(reward); // It is the user's responsibility to accept ETH.
     }
 
     /** @dev Withdraws contributions of multiple appeal rounds at once. This function is O(n) where n is the number of rounds. This could exceed the gas limit, therefore this function should be used only as a utility and not be relied upon by other contracts.
@@ -531,7 +531,7 @@ contract Linguo is IArbitrable, IEvidence {
             withdrawFeesAndRewards(_beneficiary, _taskID, i);
     }
 
-    /** @dev Gives a ruling for a dispute. Can only be called by the arbitrator.
+    /** @dev Gives the ruling for a dispute. Can only be called by the arbitrator.
      *  The purpose of this function is to ensure that the address calling it has the right to rule on the contract and to invert the ruling in the case a party loses from lack of appeal fees funding.
      *  @param _disputeID ID of the dispute in the Arbitrator contract.
      *  @param _ruling Ruling given by the arbitrator. Note that 0 is reserved for "Refuse to arbitrate".
@@ -552,7 +552,7 @@ contract Linguo is IArbitrable, IEvidence {
         executeRuling(_disputeID, uint256(resultRuling));
     }
 
-    /** @dev Executes a ruling of a dispute.
+    /** @dev Executes the ruling of a dispute.
      *  @param _disputeID ID of the dispute in the Arbitrator contract.
      *  @param _ruling Ruling given by the arbitrator. Note that 0 is reserved for "Refuse to arbitrate".
      */
@@ -584,7 +584,7 @@ contract Linguo is IArbitrable, IEvidence {
     }
 
     /** @dev Submit a reference to evidence. EVENT.
-     *  @param _taskID A task evidence is submitted for.
+     *  @param _taskID The ID of the task.
      *  @param _evidence A link to evidence using its URI.
      */
     function submitEvidence(uint256 _taskID, string calldata _evidence) external {
@@ -697,7 +697,7 @@ contract Linguo is IArbitrable, IEvidence {
         return task.rounds.length;
     }
 
-    /** @dev Gets the contributions made by a party for a given round of task's appeal.
+    /** @dev Gets the contributions made by a party for a given round of appeal of a task.
      *  @param _taskID The ID of the task.
      *  @param _round The position of the round.
      *  @param _contributor The address of the contributor.

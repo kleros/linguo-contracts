@@ -9,7 +9,7 @@ module.exports = async ({getNamedAccounts, deployments}) => {
       "0xA8243657a1E6ad1AAf2b59c4CCDFE85fC6fD7a8B",
       "0x",
       "0xd0A1E359811322d97991E03f863a0C30C2cF029C",
-      "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+      "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
       "86400",
       "1000",
       "10000",
