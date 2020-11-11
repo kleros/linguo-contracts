@@ -1,8 +1,7 @@
 require("dotenv/config");
 const {usePlugin, task} = require("@nomiclabs/buidler/config");
 
-// usePlugin("@nomiclabs/buidler-waffle");
-// usePlugin("@nomiclabs/buidler-ethers");
+usePlugin("@nomiclabs/buidler-ethers");
 usePlugin("@nomiclabs/buidler-web3");
 usePlugin("@nomiclabs/buidler-truffle5");
 usePlugin("buidler-deploy");
