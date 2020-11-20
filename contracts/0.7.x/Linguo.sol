@@ -275,7 +275,7 @@ contract Linguo is IArbitrable, IEvidence {
             ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
             task.submissionTimeout;
         uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-        uint256 translatorDeposit = arbitrationCost.mulCap(1 + (arbitrationCostMultiplier / MULTIPLIER_DIVISOR)).addCap(
+        uint256 translatorDeposit = (arbitrationCost.mulCap(arbitrationCostMultiplier) / MULTIPLIER_DIVISOR).addCap(
             (translationMultiplier.mulCap(price)) / MULTIPLIER_DIVISOR
         );
 
@@ -659,7 +659,7 @@ contract Linguo is IArbitrable, IEvidence {
                 ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
                 task.submissionTimeout;
             uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-            deposit = arbitrationCost.mulCap(1 + (arbitrationCostMultiplier / MULTIPLIER_DIVISOR)).addCap(
+            deposit = (arbitrationCost.mulCap(arbitrationCostMultiplier) / MULTIPLIER_DIVISOR).addCap(
                 (translationMultiplier.mulCap(price)) / MULTIPLIER_DIVISOR
             );
         }

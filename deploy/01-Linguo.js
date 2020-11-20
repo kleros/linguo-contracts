@@ -15,7 +15,7 @@ const paramsByChainId = {
     arbitrator: "0xA8243657a1E6ad1AAf2b59c4CCDFE85fC6fD7a8B",
     // 1 day
     reviewTimeout: "86400",
-    arbitrationCostMultiplier: "0",
+    arbitrationCostMultiplier: "10000",
     translationMultiplier: "1000",
     challengeMultiplier: "0",
     sharedStakeMultiplier: "10000",
@@ -26,7 +26,7 @@ const paramsByChainId = {
     arbitrator: "0x988b3a538b618c7a603e1c11ab82cd16dbe28069",
     // 1 week
     reviewTimeout: "604800",
-    arbitrationCostMultiplier: "5000",
+    arbitrationCostMultiplier: "15000",
     translationMultiplier: "2500",
     challengeMultiplier: "0",
     sharedStakeMultiplier: "5000",
