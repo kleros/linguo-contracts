@@ -35,6 +35,7 @@ describe("Linguo", function () {
   const arbitratorExtraData = "0x85";
   const appealTimeOut = 100;
   const reviewTimeout = 2400;
+  const arbitrationCostMultiplier = 1000;
   const translationMultiplier = 1000;
   const challengeMultiplier = 2000;
   const sharedMultiplier = 5000;
@@ -62,6 +63,7 @@ describe("Linguo", function () {
       arbitrator.address,
       arbitratorExtraData,
       reviewTimeout,
+      arbitrationCostMultiplier,
       translationMultiplier,
       challengeMultiplier,
       sharedMultiplier,

@@ -15,6 +15,7 @@ const paramsByChainId = {
     arbitrator: "0xA8243657a1E6ad1AAf2b59c4CCDFE85fC6fD7a8B",
     // 1 day
     reviewTimeout: "86400",
+    arbitrationCostMultiplier: "0",
     translationMultiplier: "1000",
     challengeMultiplier: "0",
     sharedStakeMultiplier: "10000",
@@ -25,7 +26,8 @@ const paramsByChainId = {
     arbitrator: "0x988b3a538b618c7a603e1c11ab82cd16dbe28069",
     // 1 week
     reviewTimeout: "604800",
-    translationMultiplier: "3500",
+    arbitrationCostMultiplier: "5000",
+    translationMultiplier: "2500",
     challengeMultiplier: "0",
     sharedStakeMultiplier: "5000",
     winnerStakeMultiplier: "5000",
@@ -41,6 +43,7 @@ async function deployLinguo({getNamedAccounts, getChainId, deployments}) {
   const {
     arbitrator,
     reviewTimeout,
+    arbitrationCostMultiplier,
     translationMultiplier,
     challengeMultiplier,
     sharedStakeMultiplier,
@@ -57,6 +60,7 @@ async function deployLinguo({getNamedAccounts, getChainId, deployments}) {
         arbitrator,
         arbitratorExtraData,
         reviewTimeout,
+        arbitrationCostMultiplier,
         translationMultiplier,
         challengeMultiplier,
         sharedStakeMultiplier,

@@ -14,7 +14,7 @@ async function main() {
       ),
     {}
   );
-  console.log(JSON.stringify(deployedAddresses, null, 2));
+  console.log(JSON.stringify(deployedAddresses));
 }
 
 main()
