@@ -64,7 +64,8 @@ contract Linguo is IArbitrable, IEvidence {
     bytes public arbitratorExtraData; // Extra data to allow creating a dispute on the arbitrator.
     uint256 public reviewTimeout; // Time in seconds, during which the submitted translation can be challenged.
     // All multipliers below are in basis points.
-    uint256 public translationMultiplier; // Multiplier for calculating the value of the deposit translator must pay to self-assign a task.
+    uint256 public arbitrationCostMultiplier; // Multiplier for calculating the arbitration cost related part of the deposit translator must pay to self-assign a task.
+    uint256 public translationMultiplier; // Multiplier for calculating the task price related part of the deposit translator must pay to self-assign a task.
     uint256 public challengeMultiplier; // Multiplier for calculating the value of the deposit challenger must pay to challenge a translation.
     uint256 public sharedStakeMultiplier; // Multiplier for calculating the appeal fee that must be paid by the submitter in the case where there isn't a winner and loser (e.g. when the arbitrator ruled "refuse to arbitrate").
     uint256 public winnerStakeMultiplier; // Multiplier for calculating the appeal fee of the party that won the previous round.
@@ -152,6 +153,7 @@ contract Linguo is IArbitrable, IEvidence {
         IArbitrator _arbitrator,
         bytes memory _arbitratorExtraData,
         uint256 _reviewTimeout,
+        uint256 _arbitrationCostMultiplier,
         uint256 _translationMultiplier,
         uint256 _challengeMultiplier,
         uint256 _sharedStakeMultiplier,
@@ -161,6 +163,7 @@ contract Linguo is IArbitrable, IEvidence {
         arbitrator = _arbitrator;
         arbitratorExtraData = _arbitratorExtraData;
         reviewTimeout = _reviewTimeout;
+        arbitrationCostMultiplier = _arbitrationCostMultiplier;
         translationMultiplier = _translationMultiplier;
         challengeMultiplier = _challengeMultiplier;
         sharedStakeMultiplier = _sharedStakeMultiplier;
@@ -186,7 +189,14 @@ contract Linguo is IArbitrable, IEvidence {
         reviewTimeout = _reviewTimeout;
     }
 
-    /** @dev Changes the multiplier for translators' deposit.
+    /** @dev Changes the multiplier for the arbitration cost part of the translators' deposit.
+     *  @param _arbitrationCostMultiplier A new value of the multiplier for calculating translator's deposit. In basis points.
+     */
+    function changeArbitrationCostMultiplier(uint256 _arbitrationCostMultiplier) public onlyGovernor {
+        arbitrationCostMultiplier = _arbitrationCostMultiplier;
+    }
+
+    /** @dev Changes the multiplier for the task price part of translators' deposit.
      *  @param _translationMultiplier A new value of the multiplier for calculating translator's deposit. In basis points.
      */
     function changeTranslationMultiplier(uint256 _translationMultiplier) public onlyGovernor {
@@ -265,7 +275,9 @@ contract Linguo is IArbitrable, IEvidence {
             ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
             task.submissionTimeout;
         uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-        uint256 translatorDeposit = arbitrationCost.addCap((translationMultiplier.mulCap(price)) / MULTIPLIER_DIVISOR);
+        uint256 translatorDeposit = (arbitrationCost.mulCap(arbitrationCostMultiplier) / MULTIPLIER_DIVISOR).addCap(
+            (translationMultiplier.mulCap(price)) / MULTIPLIER_DIVISOR
+        );
 
         require(task.status == Status.Created, "Task has already been assigned or reimbursed.");
         require(msg.value >= translatorDeposit, "Not enough ETH to reach the required deposit value.");
@@ -647,7 +659,9 @@ contract Linguo is IArbitrable, IEvidence {
                 ((task.maxPrice - task.minPrice) * (block.timestamp - task.lastInteraction)) /
                 task.submissionTimeout;
             uint256 arbitrationCost = arbitrator.arbitrationCost(arbitratorExtraData);
-            deposit = arbitrationCost.addCap((translationMultiplier.mulCap(price)) / MULTIPLIER_DIVISOR);
+            deposit = (arbitrationCost.mulCap(arbitrationCostMultiplier) / MULTIPLIER_DIVISOR).addCap(
+                (translationMultiplier.mulCap(price)) / MULTIPLIER_DIVISOR
+            );
         }
     }
 

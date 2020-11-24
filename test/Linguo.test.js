@@ -35,7 +35,8 @@ describe("Linguo", function () {
   const arbitratorExtraData = "0x85";
   const appealTimeOut = 100;
   const reviewTimeout = 2400;
-  const translationMultiplier = 1000;
+  const arbitrationCostMultiplier = 15000;
+  const translationMultiplier = 2500;
   const challengeMultiplier = 2000;
   const sharedMultiplier = 5000;
   const winnerMultiplier = 3000;
@@ -62,6 +63,7 @@ describe("Linguo", function () {
       arbitrator.address,
       arbitratorExtraData,
       reviewTimeout,
+      arbitrationCostMultiplier,
       translationMultiplier,
       challengeMultiplier,
       sharedMultiplier,
@@ -134,8 +136,9 @@ describe("Linguo", function () {
     assert(Math.abs(priceLinguo - price) <= price / 100, "Contract returns incorrect task price");
 
     price = Math.floor(taskMinPrice + ((taskMaxPrice - taskMinPrice) * secondsPassed) / submissionTimeout);
-    const deposit = arbitrationFee + (translationMultiplier * price) / MULTIPLIER_DIVISOR;
+    const deposit = (arbitrationFee * arbitrationCostMultiplier + translationMultiplier * price) / MULTIPLIER_DIVISOR;
     const depositLinguo = await linguo.getDepositValue(0);
+
     assert(
       Math.abs(depositLinguo.toNumber() - deposit) <= deposit / 100,
       "Contract returns incorrect required deposit"
