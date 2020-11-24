@@ -16,6 +16,8 @@ task("accounts", "Prints the list of accounts", async (_, {ethers}) => {
   }
 });
 
+const PRIVATE_KEYS = JSON.parse(process.env.PRIVATE_KEYS);
+
 // You have to export an object to set up your config
 // This object can have the following optional entries:
 // defaultNetwork, networks, solc, and paths.
@@ -41,7 +43,7 @@ module.exports = {
     kovan: {
       chainId: 42,
       url: `https://kovan.infura.io/v3/${process.env.INFURA_API_KEY}`,
-      accounts: [process.env.PRIVATE_KEY],
+      accounts: [PRIVATE_KEYS[42]],
       live: true,
       saveDeployments: true,
       tags: ["staging"],
@@ -49,7 +51,7 @@ module.exports = {
     mainnet: {
       chainId: 1,
       url: `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
-      accounts: [process.env.PRIVATE_KEY],
+      accounts: [PRIVATE_KEYS[1]],
       live: true,
       saveDeployments: true,
       tags: ["production"],
