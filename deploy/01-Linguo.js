@@ -52,6 +52,7 @@ async function deployLinguo({getNamedAccounts, getChainId, deployments}) {
   } = paramsByChainId[chainId];
 
   for (const [languagePair, arbitratorExtraData] of Object.entries(arbitratorExtraDataByLanguagePair)) {
+    console.log(`Deploying Linguo_${languagePair}...`);
     await deploy(`Linguo_${languagePair}`, {
       gas: 8000000,
       from: deployer,
@@ -71,6 +72,7 @@ async function deployLinguo({getNamedAccounts, getChainId, deployments}) {
         languagePair,
       },
     });
+    console.log("Done!\n");
   }
 }
 
