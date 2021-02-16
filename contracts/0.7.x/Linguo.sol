@@ -1,6 +1,6 @@
 /**
  * @authors: [@unknownunknown1, @hbarcelos]
- * @reviewers: [@fnanni-0, @nix1g, @clesaege]
+ * @reviewers: [@fnanni-0, @nix1g, @clesaege, @mtsalenc]
  * @auditors: []
  * @bounties: []
  * @deployments: []
@@ -650,7 +650,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @param _taskID The ID of the task.
      *  @return deposit The translator's deposit.
      */
-    function getDepositValue(uint256 _taskID) public view returns (uint256 deposit) {
+    function getDepositValue(uint256 _taskID) external view returns (uint256 deposit) {
         Task storage task = tasks[_taskID];
         if (block.timestamp - task.lastInteraction > task.submissionTimeout || task.status != Status.Created) {
             deposit = NOT_PAYABLE_VALUE;
@@ -669,7 +669,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @param _taskID The ID of the task.
      *  @return deposit The challengers's deposit.
      */
-    function getChallengeValue(uint256 _taskID) public view returns (uint256 deposit) {
+    function getChallengeValue(uint256 _taskID) external view returns (uint256 deposit) {
         Task storage task = tasks[_taskID];
         if (block.timestamp - task.lastInteraction > reviewTimeout || task.status != Status.AwaitingReview) {
             deposit = NOT_PAYABLE_VALUE;
@@ -683,7 +683,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @param _taskID The ID of the task.
      *  @return price The price of the task.
      */
-    function getTaskPrice(uint256 _taskID) public view returns (uint256 price) {
+    function getTaskPrice(uint256 _taskID) external view returns (uint256 price) {
         Task storage task = tasks[_taskID];
         if (block.timestamp - task.lastInteraction > task.submissionTimeout || task.status != Status.Created) {
             price = 0;
@@ -698,7 +698,7 @@ contract Linguo is IArbitrable, IEvidence {
     /** @dev Gets the total number of created tasks.
      *  @return The number of created tasks.
      */
-    function getTaskCount() public view returns (uint256) {
+    function getTaskCount() external view returns (uint256) {
         return tasks.length;
     }
 
@@ -706,7 +706,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @param _taskID The ID of the task.
      *  @return The number of rounds.
      */
-    function getNumberOfRounds(uint256 _taskID) public view returns (uint256) {
+    function getNumberOfRounds(uint256 _taskID) external view returns (uint256) {
         Task storage task = tasks[_taskID];
         return task.rounds.length;
     }
@@ -721,7 +721,7 @@ contract Linguo is IArbitrable, IEvidence {
         uint256 _taskID,
         uint256 _round,
         address _contributor
-    ) public view returns (uint256[3] memory contributions) {
+    ) external view returns (uint256[3] memory contributions) {
         Task storage task = tasks[_taskID];
         Round storage round = task.rounds[_round];
         contributions = round.contributions[_contributor];
@@ -731,7 +731,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @param _taskID The ID of the task.
      *  @return parties The addresses of translator and challenger as [ZERO_ADDRESS, translator, challenger].
      */
-    function getTaskParties(uint256 _taskID) public view returns (address payable[3] memory parties) {
+    function getTaskParties(uint256 _taskID) external view returns (address payable[3] memory parties) {
         Task storage task = tasks[_taskID];
         parties = task.parties;
     }
@@ -744,7 +744,7 @@ contract Linguo is IArbitrable, IEvidence {
      *  @return feeRewards The amount of fees that will be available as rewards for the winner.
      */
     function getRoundInfo(uint256 _taskID, uint256 _round)
-        public
+        external
         view
         returns (
             uint256[3] memory paidFees,
