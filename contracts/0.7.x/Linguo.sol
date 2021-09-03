@@ -28,7 +28,13 @@ contract Linguo is IArbitrable, IEvidence {
     uint256 public constant MULTIPLIER_DIVISOR = 10000; // Divisor parameter for multipliers.
     uint256 private constant NOT_PAYABLE_VALUE = (2**256 - 2) / 2; // A value depositors won't be able to pay.
 
-    enum Status {Created, Assigned, AwaitingReview, DisputeCreated, Resolved}
+    enum Status {
+        Created,
+        Assigned,
+        AwaitingReview,
+        DisputeCreated,
+        Resolved
+    }
 
     enum Party {
         None, // Party that is mapped with a 0 dispute ruling.

@@ -51,6 +51,14 @@ module.exports = {
       saveDeployments: true,
       tags: ["production"],
     },
+    sokol: {
+      chainId: 77,
+      url: "https://sokol.poa.network",
+      accounts: [PRIVATE_KEYS[77]],
+      live: true,
+      saveDeployments: true,
+      tags: ["staging"],
+    },
   },
   namedAccounts: {
     deployer: {
