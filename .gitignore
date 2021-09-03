@@ -1,8 +1,8 @@
-# Buidler files
+# Hardhat files
 cache
 artifacts
 
-# Buidler deploy files
+# Hardhat deploy files
 deployments/localhost
 deployments/hardhat
 deployments/*/solcInputs/

@@ -1,14 +1,12 @@
 require("dotenv/config");
-const {usePlugin, task} = require("@nomiclabs/buidler/config");
+const { task } = require("hardhat/config");
 
-usePlugin("@nomiclabs/buidler-ethers");
-usePlugin("@nomiclabs/buidler-web3");
-usePlugin("@nomiclabs/buidler-truffle5");
-usePlugin("buidler-deploy");
+require("@nomiclabs/hardhat-ethers");
+require("@nomiclabs/hardhat-web3");
+require("@nomiclabs/hardhat-truffle5");
+require("hardhat-deploy");
 
-// This is a sample Buidler task. To learn how to create your own go to
-// https://buidler.dev/guides/create-task.html
-task("accounts", "Prints the list of accounts", async (_, {ethers}) => {
+task("accounts", "Prints the list of accounts", async (_, { ethers }) => {
   const accounts = await ethers.getSigners();
 
   for (const account of accounts) {
@@ -18,24 +16,21 @@ task("accounts", "Prints the list of accounts", async (_, {ethers}) => {
 
 const PRIVATE_KEYS = JSON.parse(process.env.PRIVATE_KEYS);
 
-// You have to export an object to set up your config
-// This object can have the following optional entries:
-// defaultNetwork, networks, solc, and paths.
-// Go to https://buidler.dev/config/ to learn more
 module.exports = {
-  // This is a sample solc configuration that specifies which version of solc to use
-  solc: {
+  solidity: {
     version: "0.7.4",
-    optimizer: {
-      enabled: true,
-      runs: 200,
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200,
+      },
     },
   },
   paths: {
     sources: "./contracts/0.7.x",
   },
   networks: {
-    buidlerevm: {
+    hardhat: {
       live: false,
       saveDeployments: false,
       tags: ["test", "local"],

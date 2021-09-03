@@ -1,5 +1,5 @@
-const {artifacts, web3, assert} = require("@nomiclabs/buidler");
-const {expectRevert, time} = require("@openzeppelin/test-helpers");
+const { artifacts, web3, assert } = require("hardhat");
+const { expectRevert, time } = require("@openzeppelin/test-helpers");
 const Linguo = artifacts.require("./Linguo.sol");
 const Arbitrator = artifacts.require("./EnhancedAppealableArbitrator.sol");
 
@@ -55,7 +55,7 @@ describe("Linguo", function () {
   let secondsPassed;
 
   beforeEach("initialize the contract", async function () {
-    arbitrator = await Arbitrator.new(arbitrationFee, governor, arbitratorExtraData, appealTimeOut, {from: governor});
+    arbitrator = await Arbitrator.new(arbitrationFee, governor, arbitratorExtraData, appealTimeOut, { from: governor });
 
     await arbitrator.changeArbitrator(arbitrator.address);
 
@@ -69,7 +69,7 @@ describe("Linguo", function () {
       sharedMultiplier,
       winnerMultiplier,
       loserMultiplier,
-      {from: governor}
+      { from: governor }
     );
 
     MULTIPLIER_DIVISOR = (await linguo.MULTIPLIER_DIVISOR()).toNumber();
@@ -316,7 +316,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
     await increaseTime(reviewTimeout + 1);
     const task = await linguo.tasks(0);
 
@@ -340,7 +340,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
     await expectThrow(linguo.acceptTranslation(0));
 
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
@@ -361,7 +361,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     task = await linguo.tasks(0);
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
@@ -416,7 +416,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     await increaseTime(reviewTimeout + 1);
     const task = await linguo.tasks(0);
@@ -439,7 +439,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     task = await linguo.tasks(0);
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
@@ -490,7 +490,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
     const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
@@ -534,7 +534,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     task = await linguo.tasks(0);
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
@@ -575,7 +575,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
     const challengerDeposit = (await linguo.getChallengeValue(0)).toNumber() + 1000;
@@ -607,7 +607,7 @@ describe("Linguo", function () {
     assert.equal(roundInfo[1][2], false, "Should not register that challenger successfully paid fees");
 
     // Check that it's not possible to fund appeal after funding has been registered.
-    await expectThrow(linguo.fundAppeal(0, 1, {from: translator, value: loserAppealFee}));
+    await expectThrow(linguo.fundAppeal(0, 1, { from: translator, value: loserAppealFee }));
 
     const winnerAppealFee = arbitrationFee + (arbitrationFee * winnerMultiplier) / MULTIPLIER_DIVISOR;
 
@@ -642,7 +642,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     // DEL: const task = await linguo.tasks(0)
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
@@ -654,7 +654,7 @@ describe("Linguo", function () {
     await arbitrator.giveRuling(0, 1);
     const loserAppealFee = arbitrationFee + (arbitrationFee * loserMultiplier) / MULTIPLIER_DIVISOR;
     await increaseTime(appealTimeOut / 2 + 1);
-    await expectThrow(linguo.fundAppeal(0, 2, {from: challenger, value: loserAppealFee}));
+    await expectThrow(linguo.fundAppeal(0, 2, { from: challenger, value: loserAppealFee }));
   });
 
   it("Should not be possible for winner to fund appeal if appeal period has passed", async () => {
@@ -664,7 +664,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     // DEL: const task = await linguo.tasks(0)
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
@@ -677,7 +677,7 @@ describe("Linguo", function () {
 
     const winnerAppealFee = arbitrationFee + (arbitrationFee * winnerMultiplier) / MULTIPLIER_DIVISOR;
     await increaseTime(appealTimeOut + 1);
-    await expectThrow(linguo.fundAppeal(0, 1, {from: translator, value: winnerAppealFee}));
+    await expectThrow(linguo.fundAppeal(0, 1, { from: translator, value: winnerAppealFee }));
   });
 
   it("Should change the ruling if loser paid appeal fee while winner did not", async () => {
@@ -688,7 +688,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     task = await linguo.tasks(0);
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
@@ -739,7 +739,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     // DEL: const task = await linguo.tasks(0)
 
@@ -838,7 +838,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     // DEL: const task = await linguo.tasks(0)
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers
@@ -919,7 +919,7 @@ describe("Linguo", function () {
       from: translator,
       value: requiredDeposit + 1e11,
     });
-    await linguo.submitTranslation(0, "ipfs:/X", {from: translator});
+    await linguo.submitTranslation(0, "ipfs:/X", { from: translator });
 
     // DEL: const task = await linguo.tasks(0)
     // add a small amount because javascript can have small deviations up to several hundreds when operating with large numbers

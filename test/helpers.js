@@ -1,11 +1,11 @@
-const {time} = require("@openzeppelin/test-helpers");
+const { time } = require("@openzeppelin/test-helpers");
 
 function randomInt(max) {
   return Math.ceil(Math.random() * max);
 }
 
 function getEmittedEvent(eventName, receipt) {
-  return receipt.events.find(({event}) => event === eventName);
+  return receipt.events.find(({ event }) => event === eventName);
 }
 
 async function latestTime() {

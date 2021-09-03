@@ -1,4 +1,4 @@
-const {deployments, ethers, getChainId} = require("@nomiclabs/buidler");
+const { deployments, ethers, getChainId } = require("hardhat");
 const fetch = require("node-fetch");
 
 const governorAddressesByChainId = {
@@ -14,7 +14,7 @@ async function main() {
 
   const totalEstimatedGasCost = (
     await Promise.all(
-      Object.values(allDeployments).map(({address, abi}) => {
+      Object.values(allDeployments).map(({ address, abi }) => {
         const contract = new ethers.Contract(address, abi, deployer);
         return contract.estimateGas.changeGovernor(governorAddress);
       })
@@ -24,7 +24,7 @@ async function main() {
   const totalCost = totalEstimatedGasCost;
   console.info("Total Gas Cost:", ethers.utils.formatEther(totalCost));
 
-  for (const [id, {address, abi}] of Object.entries(allDeployments)) {
+  for (const [id, { address, abi }] of Object.entries(allDeployments)) {
     const contract = new ethers.Contract(address, abi, deployer);
     const tx = await contract.changeGovernor(governorAddress);
     await tx.wait();
