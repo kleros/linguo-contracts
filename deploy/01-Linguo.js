@@ -44,7 +44,7 @@ const paramsByChainId = {
     },
   },
   77: {
-    arbitrator: "0x1b7C496AF1BF92818097E517A1Bc7872efDa369b",
+    arbitrator: "0xA708D7f73fE1567429B358d7bD4Cb7969f333BB9",
     // 1 day
     reviewTimeout: "86400",
     arbitrationCostMultiplier: "10000",
