@@ -67,7 +67,7 @@ const paramsByChainId = {
   },
   100: {
     arbitrator: "0x9C1dA9A04925bDfDedf0f6421bC7EEa8305F9002",
-    // 1 day
+    // 1 week
     reviewTimeout: "604800",
     arbitrationCostMultiplier: "15000",
     translationMultiplier: "2500",
