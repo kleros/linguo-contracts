@@ -9,7 +9,7 @@ async function main() {
       Object.assign(
         acc,
         Object.assign(acc, {
-          [linkedData.languagePair]: address,
+          [linkedData.languagePair]: [address],
         })
       ),
     {}
