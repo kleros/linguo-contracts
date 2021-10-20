@@ -59,6 +59,14 @@ module.exports = {
       saveDeployments: true,
       tags: ["staging"],
     },
+    xdai: {
+      chainId: 100,
+      url: "https://rpc.xdaichain.com",
+      accounts: [PRIVATE_KEYS[100]],
+      live: true,
+      saveDeployments: true,
+      tags: ["production"],
+    },
   },
   namedAccounts: {
     deployer: {
