@@ -1,9 +1,12 @@
 const { deployments, ethers, getChainId } = require("hardhat");
-const fetch = require("node-fetch");
 
 const governorAddressesByChainId = {
   1: "0xe5bcEa6F87aAEe4a81f64dfDB4d30d400e0e5cf4",
   100: "0x5112D584a1C72Fc250176B57aEba5fFbbB287D8F",
+};
+
+const gasPriceByChainId = {
+  100: 1000000000,
 };
 
 async function main() {
@@ -11,7 +14,7 @@ async function main() {
   const governorAddress = governorAddressesByChainId[chainId];
   const [deployer] = await ethers.getSigners();
   const allDeployments = await deployments.all();
-  const gasPrice = await getGasPrice();
+  const gasPrice = gasPriceByChainId[chainId];
 
   const totalEstimatedGasCost = (
     await Promise.all(
@@ -32,21 +35,6 @@ async function main() {
 
     console.log("%s governor was updated to %s", id, governorAddress);
   }
-}
-
-async function getGasPrice(tier = "fast") {
-  const response = await fetch("https://www.gasnow.org/api/v3/gas/data", {
-    headers: {
-      Accept: "application/json, text/plain, */*",
-      "Accept-Language": "pt-BR,en-US;q=0.7,en;q=0.3",
-    },
-    method: "GET",
-    mode: "cors",
-  });
-
-  const body = await response.json();
-
-  return ethers.BigNumber.from(body.data.gasPrices[tier]);
 }
 
 main()
