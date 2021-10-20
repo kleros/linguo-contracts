@@ -1,8 +1,7 @@
 const paramsByChainId = {
   42: {
     arbitrator: "0xA8243657a1E6ad1AAf2b59c4CCDFE85fC6fD7a8B",
-    // 1 day
-    reviewTimeout: "86400",
+    reviewTimeout: "86400", // 1 day
     arbitrationCostMultiplier: "10000",
     translationMultiplier: "1000",
     challengeMultiplier: "0",
@@ -23,8 +22,7 @@ const paramsByChainId = {
   },
   77: {
     arbitrator: "0xb701ff19fBD9702DD7Ca099Ee7D0D42a2612baB5",
-    // 1 day
-    reviewTimeout: "86400",
+    reviewTimeout: "86400", // 1 day
     arbitrationCostMultiplier: "10000",
     translationMultiplier: "1000",
     challengeMultiplier: "0",
@@ -45,8 +43,7 @@ const paramsByChainId = {
   },
   1: {
     arbitrator: "0x988b3a538b618c7a603e1c11ab82cd16dbe28069",
-    // 1 week
-    reviewTimeout: "604800",
+    reviewTimeout: "604800", // 1 week
     arbitrationCostMultiplier: "15000",
     translationMultiplier: "2500",
     challengeMultiplier: "0",
@@ -67,9 +64,8 @@ const paramsByChainId = {
   },
   100: {
     arbitrator: "0x9C1dA9A04925bDfDedf0f6421bC7EEa8305F9002",
-    // 1 week
-    reviewTimeout: "604800",
-    arbitrationCostMultiplier: "15000",
+    reviewTimeout: "604800", // 1 week
+    arbitrationCostMultiplier: "12500",
     translationMultiplier: "2500",
     challengeMultiplier: "0",
     sharedStakeMultiplier: "5000",
