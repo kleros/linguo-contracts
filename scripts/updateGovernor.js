@@ -3,6 +3,7 @@ const fetch = require("node-fetch");
 
 const governorAddressesByChainId = {
   1: "0xe5bcEa6F87aAEe4a81f64dfDB4d30d400e0e5cf4",
+  100: "0x5112D584a1C72Fc250176B57aEba5fFbbB287D8F",
 };
 
 async function main() {
