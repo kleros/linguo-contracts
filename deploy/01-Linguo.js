@@ -86,8 +86,8 @@ const paramsByChainId = {
 };
 
 const gasPriceByChainId = {
-  77: "1000000000",
-  100: "1000000000",
+  77: 1000000000,
+  100: 1000000000,
 };
 
 async function deployLinguo({ getNamedAccounts, getChainId, deployments }) {
