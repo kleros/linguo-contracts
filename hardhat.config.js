@@ -52,6 +52,11 @@ module.exports = {
       live: true,
       saveDeployments: true,
       tags: ["staging"],
+      verify: {
+        etherscan: {
+          apiKey: process.env.ETHERSCAN_API_KEY,
+        },
+      },
     },
     mainnet: {
       chainId: 1,
@@ -60,6 +65,11 @@ module.exports = {
       live: true,
       saveDeployments: true,
       tags: ["production"],
+      verify: {
+        etherscan: {
+          apiKey: process.env.ETHERSCAN_API_KEY,
+        },
+      },
     },
     sokol: {
       chainId: 77,
