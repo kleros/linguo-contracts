@@ -1,10 +1,12 @@
-require("dotenv/config");
+const dotenv = require("dotenv");
 const { task } = require("hardhat/config");
 
 require("@nomiclabs/hardhat-ethers");
 require("@nomiclabs/hardhat-web3");
 require("@nomiclabs/hardhat-truffle5");
 require("hardhat-deploy");
+
+dotenv.config();
 
 task("accounts", "Prints the list of accounts", async (_, { ethers }) => {
   const accounts = await ethers.getSigners();
@@ -43,6 +45,19 @@ module.exports = {
       saveDeployments: true,
       tags: ["staging"],
     },
+    goerli: {
+      chainId: 5,
+      url: `https://goerli.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      accounts: [PRIVATE_KEYS[5]],
+      live: true,
+      saveDeployments: true,
+      tags: ["staging"],
+      verify: {
+        etherscan: {
+          apiKey: process.env.ETHERSCAN_API_KEY,
+        },
+      },
+    },
     mainnet: {
       chainId: 1,
       url: `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
@@ -50,6 +65,11 @@ module.exports = {
       live: true,
       saveDeployments: true,
       tags: ["production"],
+      verify: {
+        etherscan: {
+          apiKey: process.env.ETHERSCAN_API_KEY,
+        },
+      },
     },
     sokol: {
       chainId: 77,
