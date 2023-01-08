@@ -6,6 +6,7 @@ Smart contracts for [Linguo](https://linguo.kleros.io).
 
 - Kovan: [deployments](deployments/kovan)
 - Mainnet: [deployments](deployments/mainnet)
+- Goerli: [deployments](deployments/goerli)
 - Sokol: [deployments](deployments/sokol)
 - xDAI: [deployments](deployments/xdai)
 
